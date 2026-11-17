@@ -27,6 +27,7 @@ set(GAME_SOURCES
     src/main.c
     src/recomp_manual.c
     src/gpu_resolve.c
+    src/gpu_shader_jit.c
     src/gpu_world.c
     src/host_profile.c
 )

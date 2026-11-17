@@ -794,6 +794,12 @@ uint32_t nv2a_vsh_export_gpu(uint32_t *ins, uint32_t capacity,
     return n;
 }
 
+uint32_t nv2a_vsh_program_revision(void)
+{
+    uint32_t r = s_program_revision + 1u;
+    return r ? r : 1u;
+}
+
 int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
 {
     int mode = vsh_mode();

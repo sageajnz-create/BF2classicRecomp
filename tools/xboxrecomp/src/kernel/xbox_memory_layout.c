@@ -1723,11 +1723,12 @@ static volatile LONG g_nv2a_kick_ack_stop;
 
 static DWORD WINAPI nv2a_kick_ack_thread(LPVOID param)
 {
+    extern int nv2a_pb_exec_flip_poll(void);
     volatile uint32_t *flush =
         (volatile uint32_t *)((char *)param + NV2A_ACK_PFB_FLUSH);
 
     while (!InterlockedCompareExchange(&g_nv2a_kick_ack_stop, 0, 0)) {
-        if (*flush & 0x00010000u)
+        if ((*flush & 0x00010000u) && !nv2a_pb_exec_flip_poll())
             InterlockedAnd((volatile LONG *)flush, (LONG)~0x00010000u);
         SwitchToThread();
     }

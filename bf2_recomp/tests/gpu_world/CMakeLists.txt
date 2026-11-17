@@ -24,7 +24,7 @@ configure_file("${game}/src/gpu_vsh_shader.h.in" gpu_vsh_shader.h @ONLY)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${game}/src/nv2a_combiner.hlsli" "${game}/src/nv2a_world.hlsl"
     "${game}/src/nv2a_vsh_gpu.hlsl" "${game}/src/nv2a_vsh_gather.hlsli")
-add_executable(world-component check.c "${game}/src/gpu_world.c" "${kernel}/nv2a_combiner.c")
+add_executable(world-component check.c "${game}/src/gpu_world.c" "${game}/src/gpu_shader_jit.c" "${kernel}/nv2a_combiner.c")
 target_include_directories(world-component PRIVATE "${game}/src" "${CMAKE_CURRENT_BINARY_DIR}" "${kernel}")
 target_link_libraries(world-component PRIVATE d3d11 d3dcompiler dxgi dxguid)
 target_compile_definitions(world-component PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -43,3 +43,9 @@ set_tests_properties(gpu-world-pipelined PROPERTIES ENVIRONMENT "RECOMP_D3D11_WO
 # Query-free visibility counting via Early-Z UAV atomics
 add_test(NAME gpu-world-uav COMMAND world-component)
 set_tests_properties(gpu-world-uav PROPERTIES ENVIRONMENT "RECOMP_D3D11_WORLD=snapshot;RECOMP_VISIBILITY_UAV=1")
+# Pipelined Early-Z UAV atomics (double-buffered non-blocking readback)
+add_test(NAME gpu-world-uav-pipelined COMMAND world-component)
+set_tests_properties(gpu-world-uav-pipelined PROPERTIES ENVIRONMENT "RECOMP_D3D11_WORLD=snapshot;RECOMP_VISIBILITY_UAV=1;RECOMP_PIPELINED_QUERY=1")
+# Generic HLSL interpreter fallback (JIT disabled)
+add_test(NAME gpu-world-nojit COMMAND world-component)
+set_tests_properties(gpu-world-nojit PROPERTIES ENVIRONMENT "RECOMP_D3D11_WORLD=snapshot;RECOMP_VSH_JIT=0;RECOMP_PS_JIT=0")

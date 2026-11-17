@@ -3775,7 +3775,7 @@ static int vsh_try_world_backend(void)
                     uint64_t end = stream_base + (uint64_t)max_idx * va->stride + elem_sz;
                     if (!guest_span_ok(start, elem_sz) || !guest_span_ok(end - elem_sz, elem_sz))
                         return 0;
-                    if ((uint32_t)stream_base < min_guest_addr) min_guest_addr = (uint32_t)stream_base;
+                    if ((uint32_t)start < min_guest_addr) min_guest_addr = (uint32_t)start;
                     if ((uint32_t)end > max_guest_addr) max_guest_addr = (uint32_t)end;
                     stream_mask |= (1u << a);
                 }
@@ -3809,11 +3809,16 @@ static int vsh_try_world_backend(void)
         vertex_bytes = span;
         for (uint32_t a = 0; a < 16; a++) {
             if (stream_mask & (1u << a)) {
-                attr_desc[a][0] = s_gpu.attr[a].offset - min_guest_addr;
+                uint64_t attr_start = (uint64_t)s_gpu.attr[a].offset + (uint64_t)min_idx * s_gpu.attr[a].stride;
+                attr_desc[a][0] = (uint32_t)(attr_start - min_guest_addr);
                 attr_desc[a][1] = s_gpu.attr[a].stride;
                 attr_desc[a][2] = s_gpu.attr[a].type;
                 attr_desc[a][3] = s_gpu.attr[a].size;
             }
+        }
+        if (min_idx) {
+            for (uint32_t i = 0; i < index_count; i++)
+                s_unrolled_indices[i] -= min_idx;
         }
     }
 
@@ -3830,6 +3835,7 @@ static int vsh_try_world_backend(void)
     memcpy(draw.attribute_defaults, attribute_defaults, sizeof(attribute_defaults));
     draw.stream_mask = stream_mask;
     draw.start_slot = 0;
+    draw.program_revision = nv2a_vsh_program_revision();
     draw.aa_scale[0] = s_gpu.aa_sx;
     draw.aa_scale[1] = s_gpu.aa_sy;
     draw.fog_param[0] = s_gpu.fog_param[0];

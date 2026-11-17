@@ -47,6 +47,7 @@ typedef struct {
     float attribute_defaults[16][4];
     uint32_t stream_mask;
     uint32_t start_slot;
+    uint32_t program_revision;
     float aa_scale[2];
     float fog_param[2];
     uint32_t fog_mode;

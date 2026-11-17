@@ -53,8 +53,8 @@ cbuffer Params : register(b0)
 {
     uint g_ins_count;
     uint g_vertex_count;
-    uint g_pad0;
-    uint g_pad1;
+    uint g_ins_base;
+    uint g_const_base;
 };
 
 struct VshRegs {
@@ -165,7 +165,7 @@ static float4 rd_src(uint base, VshInp inp, VshRegs regs, int a0)
         int ci = (int)c + (rel ? a0 : 0);
         if (ci < 0 || ci >= NV2A_VSH_CONSTANTS)
             ci = 0;
-        s = g_const[ci];
+        s = g_const[g_const_base + (uint)ci];
     }
     float4 r;
     if (ident) {
@@ -255,7 +255,7 @@ static VshResult interpret(uint id, VshInp inp)
 
     uint count = min(g_ins_count, 136u);
     for (uint i = 0; i < count; i++) {
-        uint base = i * INST_STRIDE;
+        uint base = g_ins_base + i * INST_STRIDE;
         uint mac = g_ins[base + I_MAC];
         uint ilu = g_ins[base + I_ILU];
         uint mac_mask = g_ins[base + I_MAC_MASK];

@@ -298,6 +298,12 @@ static int bf2_d3d_software_method(uint32_t payload)
     return xbox_SignalTitleEvent(0x004393CCu);
 }
 
+static void set_env_if_unset(const char *name, const char *val)
+{
+    if (!getenv(name))
+        _putenv_s(name, val);
+}
+
 static void load_recomp_ini(void)
 {
     char path[MAX_PATH];
@@ -316,28 +322,33 @@ static void load_recomp_ini(void)
 
     char line[256];
     while (fgets(line, sizeof line, f)) {
-        char *eq = strchr(line, '=');
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == ';' || *p == '#' || *p == '[' || *p == '\r' || *p == '\n' || !*p)
+            continue;
+        char *eq = strchr(p, '=');
         if (!eq) continue;
         *eq = 0;
-        char *k = line, *v = eq + 1;
-        while (*k == ' ' || *k == '\t') k++;
+        char *k = p, *v = eq + 1;
         while (*v == ' ' || *v == '\t') v++;
         k[strcspn(k, " \t\r\n")] = 0;
         v[strcspn(v, " \t\r\n")] = 0;
         if (*k && *v) {
-            if (!_stricmp(k, "aspect")) _putenv_s("RECOMP_ASPECT", v);
-            else if (!_stricmp(k, "anisotropy")) _putenv_s("RECOMP_ANISOTROPY", v);
-            else if (!_stricmp(k, "cas")) _putenv_s("RECOMP_CAS", v);
-            else if (!_stricmp(k, "vsync")) _putenv_s("RECOMP_PRESENT_VSYNC", v);
-            else if (!_stricmp(k, "gpu_vsh")) _putenv_s("RECOMP_GPU_VSH", v);
-            else if (!_stricmp(k, "visibility_uav")) _putenv_s("RECOMP_VISIBILITY_UAV", v);
-            else if (!_stricmp(k, "pipelined_query")) _putenv_s("RECOMP_PIPELINED_QUERY", v);
-            else if (!_stricmp(k, "mouse_input")) _putenv_s("RECOMP_MKB", v);
-            else if (!_stricmp(k, "mouse_sens")) _putenv_s("RECOMP_MKB_SENS", v);
-            else if (!_stricmp(k, "mouse_acc")) _putenv_s("RECOMP_MKB_ACC", v);
-            else if (!_stricmp(k, "mouse_invert_y")) _putenv_s("RECOMP_MKB_INVERT_Y", v);
-            else if (!_stricmp(k, "save_dir")) _putenv_s("RECOMP_SAVE_DIR", v);
-            else if (!_strnicmp(k, "RECOMP_", 7)) _putenv_s(k, v);
+            if (!_stricmp(k, "aspect")) set_env_if_unset("RECOMP_ASPECT", v);
+            else if (!_stricmp(k, "anisotropy")) set_env_if_unset("RECOMP_ANISOTROPY", v);
+            else if (!_stricmp(k, "cas")) set_env_if_unset("RECOMP_CAS", v);
+            else if (!_stricmp(k, "vsync")) set_env_if_unset("RECOMP_PRESENT_VSYNC", v);
+            else if (!_stricmp(k, "gpu_vsh")) set_env_if_unset("RECOMP_GPU_VSH", v);
+            else if (!_stricmp(k, "visibility_uav")) set_env_if_unset("RECOMP_VISIBILITY_UAV", v);
+            else if (!_stricmp(k, "pipelined_query")) set_env_if_unset("RECOMP_PIPELINED_QUERY", v);
+            else if (!_stricmp(k, "mouse_input")) set_env_if_unset("RECOMP_MKB", v);
+            else if (!_stricmp(k, "mouse_sens")) set_env_if_unset("RECOMP_MKB_SENS", v);
+            else if (!_stricmp(k, "mouse_acc")) set_env_if_unset("RECOMP_MKB_ACC", v);
+            else if (!_stricmp(k, "mouse_invert_y")) set_env_if_unset("RECOMP_MKB_INVERT_Y", v);
+            else if (!_stricmp(k, "deadzone")) set_env_if_unset("RECOMP_MKB_DEADZONE", v);
+            else if (!_stricmp(k, "dispatch_gate")) set_env_if_unset("RECOMP_DISPATCH_GATE", v);
+            else if (!_stricmp(k, "save_dir")) set_env_if_unset("RECOMP_SAVE_DIR", v);
+            else if (!_strnicmp(k, "RECOMP_", 7)) set_env_if_unset(k, v);
         }
     }
     fclose(f);
@@ -372,12 +383,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Shell and mission teardown release textures and render targets for reuse. */
     if (!getenv("RECOMP_HEAP_RECLAIM")) _putenv_s("RECOMP_HEAP_RECLAIM", "1");
 
+    /* Load user bf2_recomp.ini before compiled defaults (caller env vars take highest priority) */
+    load_recomp_ini();
+
     /* Modern AAA Defaults: high performance GPU backend, synchronized audio, PC FPS controls */
     if (!getenv("RECOMP_D3D11_WORLD")) _putenv_s("RECOMP_D3D11_WORLD", "snapshot");
     if (!getenv("RECOMP_D3D11_RESOLVE")) _putenv_s("RECOMP_D3D11_RESOLVE", "snapshot");
     if (!getenv("RECOMP_GPU_VSH")) _putenv_s("RECOMP_GPU_VSH", "1");
     if (!getenv("RECOMP_VISIBILITY_UAV")) _putenv_s("RECOMP_VISIBILITY_UAV", "1");
     if (!getenv("RECOMP_PIPELINED_QUERY")) _putenv_s("RECOMP_PIPELINED_QUERY", "1");
+    if (!getenv("RECOMP_PB_KICK_ACK")) _putenv_s("RECOMP_PB_KICK_ACK", "1");
     if (!getenv("RECOMP_DEFER_SEGMENT_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEGMENT_QUERY_FLUSH", "1");
     if (!getenv("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH", "1");
     if (!getenv("RECOMP_DISPATCH_GATE")) _putenv_s("RECOMP_DISPATCH_GATE", "1");
@@ -385,7 +400,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_ASPECT")) _putenv_s("RECOMP_ASPECT", "16:9");
     if (!getenv("RECOMP_ANISOTROPY")) _putenv_s("RECOMP_ANISOTROPY", "16");
     if (!getenv("RECOMP_CAS")) _putenv_s("RECOMP_CAS", "1");
-    load_recomp_ini();
     nv2a_pb_set_software_method_handler(bf2_d3d_software_method);
     bf2_register_gpu_resolve();
     bf2_register_gpu_world();

@@ -9,6 +9,7 @@
 #include <intrin.h>
 
 #include "gpu_combiner.h"
+#include "gpu_shader_jit.h"
 #include "gpu_world.h"
 #include "gpu_world_shader.h"
 #include "gpu_vsh_shader.h"
@@ -98,6 +99,8 @@ typedef struct {
     ID3D11ShaderResourceView *view;
     UINT capacity;
     UINT stride;
+    UINT write_pos;
+    UINT last_base;
     UINT shadow_size;
     UINT last_bytes;
     uint8_t *shadow;
@@ -123,7 +126,11 @@ static struct {
     ID3D11DepthStencilView *bound_depth;
     ID3D11InputLayout *layout;
     ID3D11Buffer *vertices, *constants[2], *vsh_constants[3];
-    VshBuffer vsh_ins, vsh_const, vsh_words, vsh_attrs, vsh_indices, vsh_defaults;
+    VshBuffer vsh_ins, vsh_const, vsh_words, vsh_attrs, vsh_defaults;
+    ID3D11Buffer *vsh_ib;
+    UINT vsh_ib_cap, vsh_ib_pos;
+    ID3D11Buffer *bound_ib;
+    int can_no_overwrite_srv;
     /* The vertex buffer stays mapped across draws: mapping and unmapping once
      * per guest batch cost more than the copy does, and a batch ring inside
      * one WRITE_DISCARD mapping is the same buffer the GPU already reads.
@@ -158,10 +165,11 @@ static struct {
     ID3D11Query *span_query;
     int span_active;
     uint64_t visibility_draws, span_starts, span_continued, spans_ended, queries_ended;
-    ID3D11Buffer *vis_buffer, *vis_staging;
+    ID3D11Buffer *vis_buffer, *vis_staging[2];
     ID3D11UnorderedAccessView *vis_uav;
     uint32_t vis_counts[VISIBILITY_SLOTS];
     unsigned vis_next;
+    unsigned vis_frame;
     int uav_bound;
     uint64_t draws, syncs, uploads, reports, clears;
     int64_t frequency, sync_ticks, report_ticks, depth_ticks, texture_ticks, submit_ticks;
@@ -196,7 +204,8 @@ static struct {
 static void end_visibility_span(void);
 /* Query-free visibility counting: one staging copy per flush replaces hundreds
  * of occlusion queries (~0.3 ms of real GPU time each on this driver). */
-static void resolve_visibility_uav(void);
+static void resolve_visibility_uav_sync(void);
+static int queue_visibility_uav_frame(unsigned *out_staging_idx);
 
 static int64_t world_ticks(void)
 {
@@ -342,7 +351,18 @@ static uint8_t s_shadow_vsh_ins[8192];
 static uint8_t s_shadow_vsh_attrs[256];
 static uint8_t s_shadow_vsh_defaults[256];
 static uint8_t s_shadow_vsh_const[4096];
-static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void *data);
+static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void *data, UINT *out_base);
+static int upload_vsh_indices(UINT count, const uint32_t *indices, UINT *out_start);
+
+static void update_cbuffer(ID3D11Buffer *buf, const void *data, size_t size)
+{
+    D3D11_MAPPED_SUBRESOURCE map;
+    if (SUCCEEDED(ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)buf,
+                                          0, D3D11_MAP_WRITE_DISCARD, 0, &map))) {
+        memcpy(map.pData, data, size);
+        ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)buf, 0);
+    }
+}
 
 static int init_world(void)
 {
@@ -418,7 +438,7 @@ static int init_world(void)
     ID3D10Blob_Release(code);
     if (!check_gpu(hr, "clear pixel shader"))
         return 0;
-    code = compile_vsh("vs_gather_transform", "vs_5_0");
+    code = compile_vsh("vs_gather_transform_indexed", "vs_5_0");
     if (!code)
         return 0;
     hr = ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(code),
@@ -426,14 +446,22 @@ static int init_world(void)
     ID3D10Blob_Release(code);
     if (!check_gpu(hr, "gather vertex shader"))
         return 0;
+    {
+        D3D11_FEATURE_DATA_D3D11_OPTIONS opts;
+        memset(&opts, 0, sizeof opts);
+        if (SUCCEEDED(ID3D11Device_CheckFeatureSupport(world.device, D3D11_FEATURE_D3D11_OPTIONS,
+                                                       &opts, sizeof opts))) {
+            world.can_no_overwrite_srv = opts.MapNoOverwriteOnDynamicBufferSRV ? 1 : 0;
+        }
+    }
     buffer.ByteWidth = MAX_VERTICES * sizeof(Nv2aWorldVertex);
     buffer.Usage = D3D11_USAGE_DYNAMIC;
     buffer.BindFlags = D3D11_BIND_VERTEX_BUFFER;
     buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.vertices), "vertices"))
         return 0;
-    buffer.Usage = D3D11_USAGE_DEFAULT;
-    buffer.CPUAccessFlags = 0;
+    buffer.Usage = D3D11_USAGE_DYNAMIC;
+    buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     buffer.ByteWidth = sizeof(CombinerConstants);
     if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.constants[0]), "combiner buffer"))
@@ -468,11 +496,14 @@ static int init_world(void)
     buffer.ByteWidth = VISIBILITY_SLOTS * sizeof(uint32_t);
     buffer.Usage = D3D11_USAGE_STAGING;
     buffer.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.vis_staging),
-                   "visibility counter readback"))
+    if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.vis_staging[0]),
+                   "visibility counter readback 0") ||
+        !check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.vis_staging[1]),
+                   "visibility counter readback 1"))
         return 0;
     memset(&buffer, 0, sizeof buffer);
-    buffer.Usage = D3D11_USAGE_DEFAULT;
+    buffer.Usage = D3D11_USAGE_DYNAMIC;
+    buffer.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     buffer.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     buffer.ByteWidth = 16;
     if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &buffer, NULL, &world.vsh_constants[0]), "vsh params"))
@@ -491,12 +522,12 @@ static int init_world(void)
     world.vsh_attrs.shadow_size = sizeof s_shadow_vsh_attrs;
     world.vsh_defaults.shadow = s_shadow_vsh_defaults;
     world.vsh_defaults.shadow_size = sizeof s_shadow_vsh_defaults;
-    update_vsh_buffer(&world.vsh_ins, 2048, 4, NULL);
-    update_vsh_buffer(&world.vsh_const, 256, 16, NULL);
-    update_vsh_buffer(&world.vsh_words, 131072, 4, NULL);
-    update_vsh_buffer(&world.vsh_attrs, 16, 16, NULL);
-    update_vsh_buffer(&world.vsh_indices, 16384, 4, NULL);
-    update_vsh_buffer(&world.vsh_defaults, 16, 16, NULL);
+    update_vsh_buffer(&world.vsh_ins, 262144, 4, NULL, NULL);
+    update_vsh_buffer(&world.vsh_const, 65536, 16, NULL, NULL);
+    update_vsh_buffer(&world.vsh_words, 4194304, 4, NULL, NULL);
+    update_vsh_buffer(&world.vsh_attrs, 16384, 16, NULL, NULL);
+    update_vsh_buffer(&world.vsh_defaults, 16384, 16, NULL, NULL);
+    upload_vsh_indices(4194304, NULL, NULL);
     rasterizer.FillMode = D3D11_FILL_SOLID;
     rasterizer.CullMode = D3D11_CULL_NONE;
     rasterizer.DepthClipEnable = TRUE;
@@ -1303,8 +1334,7 @@ static int clear_color(uint32_t *target, uint32_t argb, uint32_t mask, uint32_t 
         if (!blend)
             return 0;
         bind_targets(surface, NULL);
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.clear_value,
-                                             0, NULL, value, 0, 0);
+        update_cbuffer(world.clear_value, value, sizeof value);
         ID3D11DeviceContext_IASetInputLayout(world.context, NULL);
         ID3D11DeviceContext_VSSetShader(world.context, world.clear_vs, NULL, 0);
         ID3D11DeviceContext_PSSetShader(world.context, world.clear_ps, NULL, 0);
@@ -1596,6 +1626,8 @@ static struct {
     VisibilityEvent visibility[REPORT_EVENTS];
     unsigned query_count;
     unsigned event_count;
+    int has_uav;
+    unsigned uav_staging_idx;
 } s_pending;
 
 static void flush_visibility_reports(int src)
@@ -1605,32 +1637,58 @@ static void flush_visibility_reports(int src)
     /* A span still open at the flush has to be sampled now: its pixels belong
      * to this frame even if the guest never sent a report for it. */
     end_visibility_span();
-    resolve_visibility_uav();
-    /* In pipelined mode the pending reports from the previous frame still
-     * need resolving even when this frame produced no new events. */
-    if (!world.event_count && !s_pending.event_count)
-        return;
-    int64_t start = world_ticks();
-    const ULONGLONG deadline = GetTickCount64() + 2000;
 
     static int s_pipelined_query = -1;
     if (s_pipelined_query < 0) {
         const char *e = getenv("RECOMP_PIPELINED_QUERY");
-        s_pipelined_query = (!e || (strcmp(e, "0") != 0 && strcmp(e, "cpu") != 0)) ? 1 : 0;
+        s_pipelined_query = (e && strcmp(e, "0") != 0 && strcmp(e, "cpu") != 0) ? 1 : 0;
     }
+
     if (s_pipelined_query && src == NV2A_FLUSH_SRC_OTHER) {
+        unsigned cur_uav_idx = 0;
+        int cur_has_uav = queue_visibility_uav_frame(&cur_uav_idx);
+
+        /* In pipelined mode the pending reports from the previous frame still
+         * need resolving even when this frame produced no new events. */
+        if (!world.event_count && !s_pending.event_count)
+            return;
+
+        int64_t start = world_ticks();
+        const ULONGLONG deadline = GetTickCount64() + 2000;
         s_flush_src.other++;
-        if (world.query_count && !world.failed) {
+        if ((world.query_count || cur_has_uav) && !world.failed) {
             ID3D11DeviceContext_Flush(world.context);
             world.reports++;
         }
-        /* Resolve previous frame's pending visibility reports */
+
+        /* Resolve previous frame's pending visibility reports asynchronously */
         if (s_pending.event_count && !world.failed) {
+            if (s_pending.has_uav) {
+                D3D11_MAPPED_SUBRESOURCE map;
+                HRESULT mhr = ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vis_staging[s_pending.uav_staging_idx],
+                                                     0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+                if (mhr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                    for (int s = 0; s < 1000 && mhr == DXGI_ERROR_WAS_STILL_DRAWING; s++) {
+                        _mm_pause();
+                        mhr = ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vis_staging[s_pending.uav_staging_idx],
+                                                     0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &map);
+                    }
+                    if (mhr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                        mhr = ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vis_staging[s_pending.uav_staging_idx],
+                                                     0, D3D11_MAP_READ, 0, &map);
+                    }
+                }
+                if (SUCCEEDED(mhr)) {
+                    memcpy(world.vis_counts, map.pData, VISIBILITY_SLOTS * sizeof(uint32_t));
+                    ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)world.vis_staging[s_pending.uav_staging_idx], 0);
+                }
+            }
             if (s_pending.query_count) {
                 ID3D11Query *last_query = s_pending.queries[s_pending.query_count - 1];
                 UINT64 dummy = 0;
                 HRESULT hr = read_query_pixels(last_query, &dummy);
                 if (hr == S_FALSE) {
+                    ID3D11DeviceContext_Flush(world.context);
                     for (int spin = 0; spin < 50000 && hr == S_FALSE; spin++) {
                         _mm_pause();
                         hr = read_query_pixels(last_query, &dummy);
@@ -1648,6 +1706,8 @@ static void flush_visibility_reports(int src)
                     q_pixels = 0;
                 } else if (event->kind == VISIBILITY_VALUE) {
                     q_pixels += event->value;
+                } else if (event->kind == VISIBILITY_UAV_SAMPLES) {
+                    q_pixels += world.vis_counts[event->slot];
                 } else if (event->kind == VISIBILITY_REPORT) {
                     uint32_t pixels = q_pixels + event->cpu_pixels;
                     memcpy(event->destination, &event->stamp, 8);
@@ -1661,6 +1721,7 @@ static void flush_visibility_reports(int src)
             }
             s_pending.event_count = 0;
             s_pending.query_count = 0;
+            s_pending.has_uav = 0;
         }
 
         /* Ping-pong queries between world and s_pending */
@@ -1673,6 +1734,8 @@ static void flush_visibility_reports(int src)
         memcpy(s_pending.visibility, world.visibility, world.event_count * sizeof(VisibilityEvent));
         s_pending.event_count = world.event_count;
         s_pending.query_count = world.query_count;
+        s_pending.has_uav = cur_has_uav;
+        s_pending.uav_staging_idx = cur_uav_idx;
 
         world.event_count = 0;
         world.query_count = 0;
@@ -1682,6 +1745,12 @@ static void flush_visibility_reports(int src)
             world.report_ticks += world_ticks() - start;
         return;
     }
+
+    resolve_visibility_uav_sync();
+    if (!world.event_count && !s_pending.event_count)
+        return;
+    int64_t start = world_ticks();
+    const ULONGLONG deadline = GetTickCount64() + 2000;
     if (world.query_count && !world.failed) {
         if (src == NV2A_FLUSH_SRC_SEGMENT) s_flush_src.seg++;
         else if (src == NV2A_FLUSH_SRC_SEMAPHORE) s_flush_src.sem++;
@@ -1744,6 +1813,8 @@ static void flush_visibility_reports(int src)
             world.query_pixels = 0;
         } else if (event->kind == VISIBILITY_VALUE) {
             world.query_pixels += event->value;
+        } else if (event->kind == VISIBILITY_UAV_SAMPLES) {
+            world.query_pixels += world.vis_counts[event->slot];
         } else if (event->kind == VISIBILITY_REPORT) {
             uint32_t pixels = world.query_pixels + event->cpu_pixels;
             memcpy(event->destination, &event->stamp, 8);
@@ -1851,11 +1922,8 @@ static unsigned begin_visibility_slot(void)
     return 0;                       /* buffer full and flush failed: no count */
 }
 
-/* Called at the top of flush_visibility_reports, before the events are read.
- * The readback is a single GPU wait regardless of how many draws are pending,
- * and turns each counter slot into an already-resolved pixel count so the
- * pipelined model can carry it to the next frame unchanged. */
-static void resolve_visibility_uav(void)
+/* Synchronous UAV resolution: used when pipelining is disabled or on internal buffer overflow */
+static void resolve_visibility_uav_sync(void)
 {
     if (!world.vis_next || world.failed || !world.vis_uav)
         return;
@@ -1865,14 +1933,15 @@ static void resolve_visibility_uav(void)
         world.uav_bound = 0;
         world.bound_ps = NULL;
     }
-    ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)world.vis_staging,
+    unsigned sync_idx = (s_pending.has_uav && s_pending.uav_staging_idx == 0) ? 1 : 0;
+    ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)world.vis_staging[sync_idx],
                                      (ID3D11Resource *)world.vis_buffer);
     D3D11_MAPPED_SUBRESOURCE map;
-    if (FAILED(ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vis_staging,
+    if (FAILED(ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vis_staging[sync_idx],
                                        0, D3D11_MAP_READ, 0, &map)))
         return;
     memcpy(world.vis_counts, map.pData, VISIBILITY_SLOTS * sizeof(uint32_t));
-    ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)world.vis_staging, 0);
+    ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)world.vis_staging[sync_idx], 0);
     static const UINT zero[4] = {0, 0, 0, 0};
     ID3D11DeviceContext_ClearUnorderedAccessViewUint(world.context, world.vis_uav, zero);
     for (unsigned i = 0; i < world.event_count; i++) {
@@ -1883,6 +1952,27 @@ static void resolve_visibility_uav(void)
         }
     }
     world.vis_next = 0;
+}
+
+/* Asynchronous/pipelined UAV copy: submits CopyResource to double-buffered staging and clears UAV */
+static int queue_visibility_uav_frame(unsigned *out_staging_idx)
+{
+    if (!world.vis_next || world.failed || !world.vis_uav)
+        return 0;
+    if (world.uav_bound) {
+        ID3D11UnorderedAccessView *empty = NULL;
+        ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(world.context, D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL, 1, 1, &empty, NULL);
+        world.uav_bound = 0;
+        world.bound_ps = NULL;
+    }
+    unsigned idx = (s_pending.has_uav && s_pending.uav_staging_idx == 0) ? 1 : 0;
+    ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)world.vis_staging[idx],
+                                     (ID3D11Resource *)world.vis_buffer);
+    static const UINT zero[4] = {0, 0, 0, 0};
+    ID3D11DeviceContext_ClearUnorderedAccessViewUint(world.context, world.vis_uav, zero);
+    world.vis_next = 0;
+    *out_staging_idx = idx;
+    return 1;
 }
 
 static int occlusion_conservative(void)
@@ -2098,13 +2188,11 @@ static int draw_world(const Nv2aWorldDraw *draw)
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
         if (!world.have_constants || memcmp(&world.last_combiner, &combiner, sizeof combiner)) {
-            ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[0],
-                                                 0, NULL, &combiner, 0, 0);
+            update_cbuffer(world.constants[0], &combiner, sizeof combiner);
             world.last_combiner = combiner;
         }
         if (!world.have_constants || memcmp(&world.last_draw, &info, sizeof info)) {
-            ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[1],
-                                                 0, NULL, &info, 0, 0);
+            update_cbuffer(world.constants[1], &info, sizeof info);
             world.last_draw = info;
         }
         world.have_constants = 1;
@@ -2121,12 +2209,18 @@ static int draw_world(const Nv2aWorldDraw *draw)
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
         info.visibility_slot = uav_slot;
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[1],
-                                             0, NULL, &info, 0, 0);
+        update_cbuffer(world.constants[1], &info, sizeof info);
         world.last_draw = info;
     }
     {
-        ID3D11PixelShader *want = uav_used ? world.ps_uav : (shade ? world.ps : NULL);
+        ID3D11PixelShader *want = NULL;
+        if (uav_used) {
+            want = world.ps_uav;
+        } else if (shade) {
+            ID3D11PixelShader *jit_ps = gpu_jit_get_ps(world.device, &combiner,
+                                                       s->alpha_test_enable, s->alpha_func);
+            want = jit_ps ? jit_ps : world.ps;
+        }
         if (world.bound_ps != want) {
             world.bound_ps = want;
             ID3D11DeviceContext_PSSetShader(world.context, world.bound_ps, NULL, 0);
@@ -2215,17 +2309,19 @@ static int draw_world(const Nv2aWorldDraw *draw)
                 (unsigned long long)s_sync_stats.color_copies, (unsigned long long)s_sync_stats.depth_copies);
         world.sync_ticks = world.report_ticks = world.depth_ticks = world.texture_ticks = world.submit_ticks = 0;
         gt_report();
+        gpu_jit_report_stats();
     }
     submitted = 1;
 
 release_bindings:
     return submitted;
-    return submitted;
 }
 
-static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void *data)
+static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void *data, UINT *out_base)
 {
     UINT alloc_count = count ? count : 1;
+    if (out_base)
+        *out_base = 0;
     if (!vb->buffer || vb->capacity < alloc_count || vb->stride != stride) {
         if (vb->view) {
             ID3D11ShaderResourceView_Release(vb->view);
@@ -2240,7 +2336,8 @@ static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void 
             cap = alloc_count;
         D3D11_BUFFER_DESC desc = {0};
         desc.ByteWidth = cap * stride;
-        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
         desc.StructureByteStride = stride;
@@ -2254,19 +2351,92 @@ static int update_vsh_buffer(VshBuffer *vb, UINT count, UINT stride, const void 
             return 0;
         vb->capacity = cap;
         vb->stride = stride;
+        vb->write_pos = 0;
+        vb->last_base = 0;
         vb->last_bytes = 0;
     }
     if (data && count > 0) {
         UINT bytes = count * stride;
         if (vb->shadow && bytes <= vb->shadow_size) {
-            if (vb->last_bytes == bytes && !memcmp(vb->shadow, data, bytes))
+            if (vb->last_bytes == bytes && !memcmp(vb->shadow, data, bytes)) {
+                if (out_base)
+                    *out_base = vb->last_base;
                 return 1;
+            }
+        }
+        D3D11_MAP map_type;
+        UINT base;
+        if (world.can_no_overwrite_srv && vb->write_pos > 0 && vb->write_pos + count <= vb->capacity) {
+            map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+            base = vb->write_pos;
+        } else {
+            map_type = D3D11_MAP_WRITE_DISCARD;
+            vb->write_pos = 0;
+            vb->last_bytes = 0;
+            base = 0;
+        }
+        D3D11_MAPPED_SUBRESOURCE map;
+        if (!check_gpu(ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)vb->buffer,
+                                               0, map_type, 0, &map), "vsh map"))
+            return 0;
+        memcpy((uint8_t *)map.pData + (size_t)base * stride, data, bytes);
+        ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)vb->buffer, 0);
+        vb->write_pos = base + count;
+        if (vb->shadow && bytes <= vb->shadow_size) {
             memcpy(vb->shadow, data, bytes);
             vb->last_bytes = bytes;
+            vb->last_base = base;
         }
-        D3D11_BOX box = {0, 0, 0, bytes, 1, 1};
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)vb->buffer,
-                                             0, &box, data, 0, 0);
+        if (out_base)
+            *out_base = base;
+    }
+    return 1;
+}
+
+static int upload_vsh_indices(UINT count, const uint32_t *indices, UINT *out_start)
+{
+    UINT alloc_count = count ? count : 1;
+    if (out_start)
+        *out_start = 0;
+    if (!world.vsh_ib || world.vsh_ib_cap < alloc_count) {
+        if (world.vsh_ib) {
+            ID3D11Buffer_Release(world.vsh_ib);
+            world.vsh_ib = NULL;
+        }
+        world.bound_ib = NULL;
+        UINT cap = world.vsh_ib_cap ? world.vsh_ib_cap * 2 : 65536;
+        if (cap < alloc_count)
+            cap = alloc_count;
+        D3D11_BUFFER_DESC desc = {0};
+        desc.ByteWidth = cap * sizeof(uint32_t);
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+        if (!check_gpu(ID3D11Device_CreateBuffer(world.device, &desc, NULL, &world.vsh_ib), "vsh ib"))
+            return 0;
+        world.vsh_ib_cap = cap;
+        world.vsh_ib_pos = 0;
+    }
+    if (indices && count > 0) {
+        D3D11_MAP map_type;
+        UINT start;
+        if (world.vsh_ib_pos > 0 && world.vsh_ib_pos + count <= world.vsh_ib_cap) {
+            map_type = D3D11_MAP_WRITE_NO_OVERWRITE;
+            start = world.vsh_ib_pos;
+        } else {
+            map_type = D3D11_MAP_WRITE_DISCARD;
+            world.vsh_ib_pos = 0;
+            start = 0;
+        }
+        D3D11_MAPPED_SUBRESOURCE map;
+        if (!check_gpu(ID3D11DeviceContext_Map(world.context, (ID3D11Resource *)world.vsh_ib,
+                                               0, map_type, 0, &map), "vsh ib map"))
+            return 0;
+        memcpy((uint32_t *)map.pData + start, indices, (size_t)count * sizeof(uint32_t));
+        ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)world.vsh_ib, 0);
+        world.vsh_ib_pos = start + count;
+        if (out_start)
+            *out_start = start;
     }
     return 1;
 }
@@ -2431,13 +2601,11 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
         if (!world.have_constants || memcmp(&world.last_combiner, &combiner, sizeof combiner)) {
-            ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[0],
-                                                 0, NULL, &combiner, 0, 0);
+            update_cbuffer(world.constants[0], &combiner, sizeof combiner);
             world.last_combiner = combiner;
         }
         if (!world.have_constants || memcmp(&world.last_draw, &info, sizeof info)) {
-            ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[1],
-                                                 0, NULL, &info, 0, 0);
+            update_cbuffer(world.constants[1], &info, sizeof info);
             world.last_draw = info;
         }
         world.have_constants = 1;
@@ -2454,12 +2622,18 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
         info.visibility_slot = uav_slot;
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.constants[1],
-                                             0, NULL, &info, 0, 0);
+        update_cbuffer(world.constants[1], &info, sizeof info);
         world.last_draw = info;
     }
     {
-        ID3D11PixelShader *want = uav_used ? world.ps_uav : (shade ? world.ps : NULL);
+        ID3D11PixelShader *want = NULL;
+        if (uav_used) {
+            want = world.ps_uav;
+        } else if (shade) {
+            ID3D11PixelShader *jit_ps = gpu_jit_get_ps(world.device, &combiner,
+                                                       s->alpha_test_enable, s->alpha_func);
+            want = jit_ps ? jit_ps : world.ps;
+        }
         if (world.bound_ps != want) {
             world.bound_ps = want;
             ID3D11DeviceContext_PSSetShader(world.context, world.bound_ps, NULL, 0);
@@ -2482,32 +2656,42 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         ID3D11DeviceContext_OMSetBlendState(world.context, blend, factors, UINT32_MAX);
     }
 
-    /* Upload vertex shader buffers */
-    if (!update_vsh_buffer(&world.vsh_ins, draw->instruction_count * 44, 4, draw->instructions))
+    /* Resolve native HLSL JIT vertex shader (falls back to generic interpreter) */
+    ID3D11VertexShader *jit_vs = gpu_jit_get_vsh(world.device, draw->instructions,
+                                                 draw->instruction_count, draw->stream_mask,
+                                                 draw->program_revision);
+    ID3D11VertexShader *want_vs = jit_vs ? jit_vs : world.vsh_gather;
+
+    /* Stream vertex shader buffers into dynamic ring buffers (zero GPU stalls) */
+    UINT ins_base = 0, const_base = 0, words_base = 0, attrs_base = 0, defaults_base = 0, start_index = 0;
+    if (!jit_vs) {
+        if (!update_vsh_buffer(&world.vsh_ins, draw->instruction_count * 44, 4, draw->instructions, &ins_base))
+            goto release_bindings;
+    }
+    if (!update_vsh_buffer(&world.vsh_const, draw->constant_count, 16, draw->constants, &const_base))
         goto release_bindings;
-    if (!update_vsh_buffer(&world.vsh_const, draw->constant_count, 16, draw->constants))
+    if (!update_vsh_buffer(&world.vsh_words, (draw->vertex_bytes + 3) / 4, 4, draw->vertex_words, &words_base))
         goto release_bindings;
-    if (!update_vsh_buffer(&world.vsh_words, (draw->vertex_bytes + 3) / 4, 4, draw->vertex_words))
+    if (!update_vsh_buffer(&world.vsh_attrs, 16, 16, draw->attributes, &attrs_base))
         goto release_bindings;
-    if (!update_vsh_buffer(&world.vsh_attrs, 16, 16, draw->attributes))
+    if (!update_vsh_buffer(&world.vsh_defaults, 16, 16, draw->attribute_defaults, &defaults_base))
         goto release_bindings;
-    if (!update_vsh_buffer(&world.vsh_indices, draw->index_count, 4, draw->indices))
-        goto release_bindings;
-    if (!update_vsh_buffer(&world.vsh_defaults, 16, 16, draw->attribute_defaults))
+    if (!upload_vsh_indices(draw->index_count, draw->indices, &start_index))
         goto release_bindings;
 
     struct {
         uint32_t ins_count;
         uint32_t vertex_count;
-        uint32_t pad0, pad1;
-    } p0 = {draw->instruction_count, draw->index_count, 0, 0};
+        uint32_t ins_base;
+        uint32_t const_base;
+    } p0 = {draw->instruction_count, draw->index_count, ins_base, const_base};
 
     struct {
         uint32_t vertex_bytes;
         uint32_t stream_mask;
         uint32_t index_count;
-        uint32_t reserved;
-    } p1 = {draw->vertex_bytes, draw->stream_mask, draw->index_count, 0};
+        uint32_t words_base;
+    } p1 = {draw->vertex_bytes, draw->stream_mask, draw->index_count, words_base};
 
     struct {
         float aa_scale[2];
@@ -2520,17 +2704,18 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         {draw->fog_param[0], draw->fog_param[1]},
         draw->fog_mode,
         {(color->width ? color->width : WIDTH) * 0.5f, (color->height ? color->height : HEIGHT) * 0.5f},
-        0
+        ((attrs_base / 16u) & 0xFFFFu) | (((defaults_base / 16u) & 0xFFFFu) << 16)
     };
 
     static struct {
         uint32_t ins_count;
         uint32_t vertex_count;
-        uint32_t pad0, pad1;
+        uint32_t ins_base;
+        uint32_t const_base;
     } last_p0;
     static int have_last_p0 = 0;
     if (!have_last_p0 || memcmp(&last_p0, &p0, sizeof p0)) {
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.vsh_constants[0], 0, NULL, &p0, 0, 0);
+        update_cbuffer(world.vsh_constants[0], &p0, sizeof p0);
         memcpy(&last_p0, &p0, sizeof p0);
         have_last_p0 = 1;
     }
@@ -2539,11 +2724,11 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         uint32_t vertex_bytes;
         uint32_t stream_mask;
         uint32_t index_count;
-        uint32_t reserved;
+        uint32_t words_base;
     } last_p1;
     static int have_last_p1 = 0;
     if (!have_last_p1 || memcmp(&last_p1, &p1, sizeof p1)) {
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.vsh_constants[1], 0, NULL, &p1, 0, 0);
+        update_cbuffer(world.vsh_constants[1], &p1, sizeof p1);
         memcpy(&last_p1, &p1, sizeof p1);
         have_last_p1 = 1;
     }
@@ -2556,7 +2741,7 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
     } last_p2;
     static int have_last_p2 = 0;
     if (!have_last_p2 || memcmp(&last_p2, &p2, sizeof p2)) {
-        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.vsh_constants[2], 0, NULL, &p2, 0, 0);
+        update_cbuffer(world.vsh_constants[2], &p2, sizeof p2);
         memcpy(&last_p2, &p2, sizeof p2);
         have_last_p2 = 1;
     }
@@ -2567,28 +2752,34 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         NULL,
         world.vsh_words.view,
         world.vsh_attrs.view,
-        world.vsh_indices.view,
+        NULL,
         world.vsh_defaults.view
     };
     static ID3D11ShaderResourceView *last_vsh_views[7];
-    if (world.bound_vs != world.vsh_gather || memcmp(last_vsh_views, vsh_views, sizeof vsh_views)) {
-        ID3D11DeviceContext_VSSetShaderResources(world.context, 0, 7, vsh_views);
-        memcpy(last_vsh_views, vsh_views, sizeof vsh_views);
-    }
-
-    if (world.bound_vs != world.vsh_gather || world.bound_layout != NULL) {
+    if (world.bound_layout != NULL) {
         ID3D11DeviceContext_IASetInputLayout(world.context, NULL);
         ID3D11DeviceContext_IASetVertexBuffers(world.context, 0, 0, NULL, NULL, NULL);
         ID3D11DeviceContext_IASetPrimitiveTopology(world.context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        ID3D11DeviceContext_VSSetShader(world.context, world.vsh_gather, NULL, 0);
         ID3D11DeviceContext_VSSetConstantBuffers(world.context, 0, 3, world.vsh_constants);
-        world.bound_vs = world.vsh_gather;
+        ID3D11DeviceContext_VSSetShaderResources(world.context, 0, 7, vsh_views);
+        memcpy(last_vsh_views, vsh_views, sizeof vsh_views);
         world.bound_layout = NULL;
+    } else if (memcmp(last_vsh_views, vsh_views, sizeof vsh_views)) {
+        ID3D11DeviceContext_VSSetShaderResources(world.context, 0, 7, vsh_views);
+        memcpy(last_vsh_views, vsh_views, sizeof vsh_views);
+    }
+    if (world.bound_vs != want_vs) {
+        ID3D11DeviceContext_VSSetShader(world.context, want_vs, NULL, 0);
+        world.bound_vs = want_vs;
+    }
+    if (world.bound_ib != world.vsh_ib) {
+        ID3D11DeviceContext_IASetIndexBuffer(world.context, world.vsh_ib, DXGI_FORMAT_R32_UINT, 0);
+        world.bound_ib = world.vsh_ib;
     }
 
     if (query)
         ID3D11DeviceContext_Begin(world.context, (ID3D11Asynchronous *)query);
-    ID3D11DeviceContext_Draw(world.context, draw->index_count, 0);
+    ID3D11DeviceContext_DrawIndexed(world.context, draw->index_count, start_index, 0);
     if (uav_used)
         enqueue_visibility((VisibilityEvent){.kind = VISIBILITY_UAV_SAMPLES, .slot = uav_slot});
 
@@ -2661,11 +2852,11 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
                 (unsigned long long)s_sync_stats.color_copies, (unsigned long long)s_sync_stats.depth_copies);
         world.sync_ticks = world.report_ticks = world.depth_ticks = world.texture_ticks = world.submit_ticks = 0;
         gt_report();
+        gpu_jit_report_stats();
     }
     submitted = 1;
 
 release_bindings:
-    return submitted;
     return submitted;
 }
 

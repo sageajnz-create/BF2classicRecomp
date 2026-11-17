@@ -9,27 +9,38 @@ cbuffer GatherParams : register(b1) {
     uint g_vertex_bytes;
     uint g_stream_mask;
     uint g_index_count;
-    uint g_gather_reserved;
+    uint g_words_base;
+};
+
+cbuffer TransformParams : register(b2) {
+    float2 g_aa_scale;
+    float2 g_fog_param;
+    uint g_fog_mode;
+    float2 g_half_dim;
+    uint g_transform_reserved; /* low 16: attrs_base/16, high 16: defaults_base/16 */
 };
 
 uint vertex_byte(uint address)
 {
-    return (g_vertex_words[address >> 2] >> ((address & 3) * 8)) & 255;
+    return (g_vertex_words[g_words_base + (address >> 2)] >> ((address & 3) * 8)) & 255;
 }
 
 uint vertex_word(uint address)
 {
-    uint lo = g_vertex_words[address >> 2];
+    uint w = g_words_base + (address >> 2);
+    uint lo = g_vertex_words[w];
     uint shift = (address & 3) * 8;
     if (!shift) return lo;
-    return (lo >> shift) | (g_vertex_words[(address >> 2) + 1] << (32 - shift));
+    return (lo >> shift) | (g_vertex_words[w + 1] << (32 - shift));
 }
 
 float4 gather_attribute(uint slot, uint index)
 {
-    if (!(g_stream_mask & (1u << slot))) return g_attribute_defaults[slot];
+    uint attr_base = (g_transform_reserved & 0xFFFFu) * 16u;
+    uint def_base = (g_transform_reserved >> 16) * 16u;
+    if (!(g_stream_mask & (1u << slot))) return g_attribute_defaults[def_base + slot];
     if (index >= 0x01000000u) return float4(0, 0, 0, 1);
-    uint4 d = g_attributes[slot];
+    uint4 d = g_attributes[attr_base + slot];
     float4 result = float4(0, 0, 0, 1);
     uint n = min(d.w, 4u);
     if (!n || !d.y) return result;
@@ -120,14 +131,6 @@ struct RasterVertex {
     noperspective float fog : TEXCOORD4;
 };
 
-cbuffer TransformParams : register(b2) {
-    float2 g_aa_scale;
-    float2 g_fog_param;
-    uint g_fog_mode;
-    float2 g_half_dim;
-    uint g_transform_reserved;
-};
-
 float eval_fog(float d)
 {
     if (!g_fog_mode)
@@ -147,12 +150,11 @@ float eval_fog(float d)
     return saturate(f);
 }
 
-RasterVertex compute_vertex(uint vid)
+RasterVertex compute_vertex_by_index(uint index)
 {
-    uint index = g_indices[vid];
     VshInp inp = gather_all_attributes(index);
 
-    VshResult o = interpret(vid, inp);
+    VshResult o = interpret(0u, inp);
 
     /* The title's vertex program writes oPos in screen pixels (it has already
      * divided by the clip-space w and applied the viewport), with the clip w
@@ -188,9 +190,19 @@ RasterVertex compute_vertex(uint vid)
     return outv;
 }
 
+RasterVertex compute_vertex(uint vid)
+{
+    return compute_vertex_by_index(g_indices[vid]);
+}
+
 RasterVertex vs_gather_transform(uint vid : SV_VertexID)
 {
     return compute_vertex(vid);
+}
+
+RasterVertex vs_gather_transform_indexed(uint index : SV_VertexID)
+{
+    return compute_vertex_by_index(index);
 }
 
 [numthreads(64, 1, 1)]
