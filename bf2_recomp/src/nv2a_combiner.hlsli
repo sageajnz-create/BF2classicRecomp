@@ -17,6 +17,97 @@ cbuffer Program : register(b0) {
     uint4 config; // stage control, stage program, final RGB word, final alpha word
 };
 
+/* Combiner registers: scalar struct to eliminate dcl_indexableTemp arrays on modern GPUs.
+ * Register 0 (zero) is hardwired to zero; writes to register 0 are ignored. */
+struct CombinerRegs {
+    float4 r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15;
+};
+
+float4 get_reg(CombinerRegs r, uint idx)
+{
+    switch (idx & 15u) {
+        case 0u: return r.r0;
+        case 1u: return r.r1;
+        case 2u: return r.r2;
+        case 3u: return r.r3;
+        case 4u: return r.r4;
+        case 5u: return r.r5;
+        case 6u: return r.r6;
+        case 7u: return r.r7;
+        case 8u: return r.r8;
+        case 9u: return r.r9;
+        case 10u: return r.r10;
+        case 11u: return r.r11;
+        case 12u: return r.r12;
+        case 13u: return r.r13;
+        case 14u: return r.r14;
+        default: return r.r15;
+    }
+}
+
+void set_reg(inout CombinerRegs r, uint idx, float4 val)
+{
+    switch (idx & 15u) {
+        case 1u: r.r1 = val; break;
+        case 2u: r.r2 = val; break;
+        case 3u: r.r3 = val; break;
+        case 4u: r.r4 = val; break;
+        case 5u: r.r5 = val; break;
+        case 6u: r.r6 = val; break;
+        case 7u: r.r7 = val; break;
+        case 8u: r.r8 = val; break;
+        case 9u: r.r9 = val; break;
+        case 10u: r.r10 = val; break;
+        case 11u: r.r11 = val; break;
+        case 12u: r.r12 = val; break;
+        case 13u: r.r13 = val; break;
+        case 14u: r.r14 = val; break;
+        case 15u: r.r15 = val; break;
+    }
+}
+
+void set_reg_rgb(inout CombinerRegs r, uint idx, float3 rgb)
+{
+    switch (idx & 15u) {
+        case 1u: r.r1.rgb = rgb; break;
+        case 2u: r.r2.rgb = rgb; break;
+        case 3u: r.r3.rgb = rgb; break;
+        case 4u: r.r4.rgb = rgb; break;
+        case 5u: r.r5.rgb = rgb; break;
+        case 6u: r.r6.rgb = rgb; break;
+        case 7u: r.r7.rgb = rgb; break;
+        case 8u: r.r8.rgb = rgb; break;
+        case 9u: r.r9.rgb = rgb; break;
+        case 10u: r.r10.rgb = rgb; break;
+        case 11u: r.r11.rgb = rgb; break;
+        case 12u: r.r12.rgb = rgb; break;
+        case 13u: r.r13.rgb = rgb; break;
+        case 14u: r.r14.rgb = rgb; break;
+        case 15u: r.r15.rgb = rgb; break;
+    }
+}
+
+void set_reg_a(inout CombinerRegs r, uint idx, float a)
+{
+    switch (idx & 15u) {
+        case 1u: r.r1.a = a; break;
+        case 2u: r.r2.a = a; break;
+        case 3u: r.r3.a = a; break;
+        case 4u: r.r4.a = a; break;
+        case 5u: r.r5.a = a; break;
+        case 6u: r.r6.a = a; break;
+        case 7u: r.r7.a = a; break;
+        case 8u: r.r8.a = a; break;
+        case 9u: r.r9.a = a; break;
+        case 10u: r.r10.a = a; break;
+        case 11u: r.r11.a = a; break;
+        case 12u: r.r12.a = a; break;
+        case 13u: r.r13.a = a; break;
+        case 14u: r.r14.a = a; break;
+        case 15u: r.r15.a = a; break;
+    }
+}
+
 float map_input(float x, uint input_byte)
 {
     float p = max(x, 0.0);
@@ -45,8 +136,8 @@ float mapped_alpha(float4 v, uint input_byte)
     return map_input((input_byte & 16) ? v.a : v.b, input_byte);
 }
 
-#define READ_RGB(input) mapped_rgb(r[(input) & 15], input)
-#define READ_ALPHA(input) mapped_alpha(r[(input) & 15], input)
+#define READ_RGB(input) mapped_rgb(get_reg(r, (input) & 15u), input)
+#define READ_ALPHA(input) mapped_alpha(get_reg(r, (input) & 15u), input)
 
 float3 map_output(float3 c, uint flag)
 {
@@ -60,14 +151,14 @@ float3 map_output(float3 c, uint flag)
     return clamp(c, -1.0, 1.0);
 }
 
-void run_stage(inout float4 r[16], uint icw, uint aicw,
+void run_stage(inout CombinerRegs r, uint icw, uint aicw,
                uint ocw, uint aocw, uint flags)
 {
     uint rgb_flags = ocw >> 12;
     uint alpha_flags = aocw >> 12;
     uint3 rgb_dst = uint3((ocw >> 4) & 15, ocw & 15, (ocw >> 8) & 15);
     uint3 alpha_dst = uint3((aocw >> 4) & 15, aocw & 15, (aocw >> 8) & 15);
-    bool mux_cd = (flags & 1) ? (r[12].a >= 0.5) : (((int)(r[12].a * 255.0) & 1) != 0);
+    bool mux_cd = (flags & 1) ? (r.r12.a >= 0.5) : (((int)(r.r12.a * 255.0) & 1) != 0);
     float3 aout = 0.0;
 
     if (aocw & 0xfff) {
@@ -89,55 +180,57 @@ void run_stage(inout float4 r[16], uint icw, uint aicw,
             cd = cd.r + cd.g + cd.b;
         float3 sum = (rgb_flags & 4) ? (mux_cd ? cd : ab) : ab + cd;
         if (rgb_dst.x) {
-            r[rgb_dst.x].rgb = map_output(ab, rgb_flags);
+            float3 mapped_ab = map_output(ab, rgb_flags);
+            set_reg_rgb(r, rgb_dst.x, mapped_ab);
             if (rgb_flags & 0x80)
-                r[rgb_dst.x].a = r[rgb_dst.x].b;
+                set_reg_a(r, rgb_dst.x, mapped_ab.b);
         }
         if (rgb_dst.y) {
-            r[rgb_dst.y].rgb = map_output(cd, rgb_flags);
+            float3 mapped_cd = map_output(cd, rgb_flags);
+            set_reg_rgb(r, rgb_dst.y, mapped_cd);
             if (rgb_flags & 0x40)
-                r[rgb_dst.y].a = r[rgb_dst.y].b;
+                set_reg_a(r, rgb_dst.y, mapped_cd.b);
         }
         if (rgb_dst.z)
-            r[rgb_dst.z].rgb = map_output(sum, rgb_flags);
+            set_reg_rgb(r, rgb_dst.z, map_output(sum, rgb_flags));
     }
-    if (alpha_dst.x) r[alpha_dst.x].a = aout.x;
-    if (alpha_dst.y) r[alpha_dst.y].a = aout.y;
-    if (alpha_dst.z) r[alpha_dst.z].a = aout.z;
+    if (alpha_dst.x) set_reg_a(r, alpha_dst.x, aout.x);
+    if (alpha_dst.y) set_reg_a(r, alpha_dst.y, aout.y);
+    if (alpha_dst.z) set_reg_a(r, alpha_dst.z, aout.z);
 }
 
 float4 combine_pixel(PixelInput p)
 {
-    float4 r[16];
-    [unroll] for (uint i = 0; i < 16; i++)
-        r[i] = 0.0;
-    r[3] = p.fog;
-    r[4] = p.v0;
-    r[5] = p.v1;
-    [unroll] for (uint j = 0; j < 4; j++)
-        r[8 + j] = p.tex[j];
-    r[12].a = (config.y & 31) ? r[8].a : 1.0;
+    CombinerRegs r = (CombinerRegs)0;
+    r.r3 = p.fog;
+    r.r4 = p.v0;
+    r.r5 = p.v1;
+    r.r8 = p.tex[0];
+    r.r9 = p.tex[1];
+    r.r10 = p.tex[2];
+    r.r11 = p.tex[3];
+    r.r12.a = (config.y & 31) ? r.r8.a : 1.0;
     for (uint stage = 0; stage < min(config.x & 255, 8); stage++) {
         uint group = stage >> 2;
         uint lane = stage & 3;
         uint ocw = color_ocw[group][lane];
         uint aocw = alpha_ocw[group][lane];
         if ((ocw | aocw) & 0xfff) {
-            r[1] = c0[stage];
-            r[2] = c1[stage];
+            r.r1 = c0[stage];
+            r.r2 = c1[stage];
             run_stage(r, color_icw[group][lane], alpha_icw[group][lane],
                       ocw, aocw, config.x >> 8);
         }
     }
-    precise float4 result = r[12];
+    precise float4 result = r.r12;
     if (config.z || config.w) {
-        r[1] = final_c0;
-        r[2] = final_c1;
-        float3 va = (config.w & 0x40) ? 1.0 - r[5].rgb : r[5].rgb;
-        float3 ra = (config.w & 0x20) ? 1.0 - r[12].rgb : r[12].rgb;
+        r.r1 = final_c0;
+        r.r2 = final_c1;
+        float3 va = (config.w & 0x40) ? 1.0 - r.r5.rgb : r.r5.rgb;
+        float3 ra = (config.w & 0x20) ? 1.0 - r.r12.rgb : r.r12.rgb;
         float3 sum = va + ra;
-        r[14] = float4((config.w & 0x80) ? saturate(sum) : sum, 0.0);
-        r[15] = float4(READ_RGB(config.w >> 24) * READ_RGB(config.w >> 16), 0.0);
+        r.r14 = float4((config.w & 0x80) ? saturate(sum) : sum, 0.0);
+        r.r15 = float4(READ_RGB(config.w >> 24) * READ_RGB(config.w >> 16), 0.0);
         float3 a = READ_RGB(config.z >> 24);
         float3 b = READ_RGB(config.z >> 16);
         float3 c = READ_RGB(config.z >> 8);

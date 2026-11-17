@@ -1668,10 +1668,17 @@ static void vp_trace_positions(MCPXAPUState *d)
     }
 }
 
+static uint16_t s_idle_last = 0xFFFF;   /* the idle voice reported last */
+
 void mcpx_apu_vp_frame(MCPXAPUState *d,
                         float mixbins[NUM_MIXBINS][NUM_SAMPLES_PER_FRAME])
 {
     memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
+
+    /* Idle voices still in a list: the first one in walk order, and the
+     * first one after the voice reported last (s_idle_last). */
+    uint16_t idle_first = 0xFFFF, idle_after = 0xFFFF;
+    bool idle_seen_last = false;
 
     for (int list = 0; list < 3; list++) {
         hwaddr top, current, next;
@@ -1693,13 +1700,13 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
 
             if (!voice_get_mask(d, v, NV_PAVS_VOICE_PAR_STATE,
                                 NV_PAVS_VOICE_PAR_STATE_ACTIVE_VOICE)) {
-                /* One trap at a time: once the front end is trapped, a second
-                 * idle voice in the same frame would overwrite FEDECPARAM
-                 * before the ISR has read the first. The rest trap on later
-                 * frames, after the ISR has resumed the front end. */
-                if ((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
-                        != NV_PAPU_FECTL_FEMETHMODE_TRAPPED)
-                    fe_method(d, SE2FE_IDLE_VOICE, v);
+                /* Idle: reported after the walk, one voice per frame. */
+                if (idle_first == 0xFFFF)
+                    idle_first = v;
+                if (idle_seen_last && idle_after == 0xFFFF)
+                    idle_after = v;
+                if (v == s_idle_last)
+                    idle_seen_last = true;
             } else {
                 /* Process voice directly (single-threaded) */
                 voice_spin_lock(d, v);
@@ -1708,6 +1715,17 @@ void mcpx_apu_vp_frame(MCPXAPUState *d,
             }
             d->regs[current] = d->regs[next];
         }
+    }
+
+    /* Report one idle voice per frame, round-robin over the idle voices.
+     * DirectSound multi-voice sound buffers retire through one of them;
+     * round-robin prevents earlier idle voices from starving the retiring voice. */
+    if (idle_first != 0xFFFF
+            && (d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE)
+               != NV_PAPU_FECTL_FEMETHMODE_TRAPPED) {
+        uint16_t v = idle_after != 0xFFFF ? idle_after : idle_first;
+        s_idle_last = v;
+        fe_method(d, SE2FE_IDLE_VOICE, v);
     }
 
     vp_trace_positions(d);

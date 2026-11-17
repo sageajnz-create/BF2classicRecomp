@@ -114,6 +114,18 @@ static int mcpx_apu_mixdown_all(void)
     return on;
 }
 
+/* The speaker bins (0..9) as an ITU stereo downmix rather than even/odd fold.
+ * Default ON; RECOMP_APU_MIXDOWN=legacy keeps the even/odd fold. */
+static int mcpx_apu_mixdown_speakers(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("RECOMP_APU_MIXDOWN");
+        on = !(e && !strcmp(e, "legacy"));
+    }
+    return on;
+}
+
 /* GPRST (GP region + 0xFFFC): the GP runs only with both reset bits set, as
  * in xemu's gp_write. Nothing else models the GP, so this is kept for the
  * =auto ack alone. Before the first write the GP counts as running: a title
@@ -278,7 +290,23 @@ void mcpx_apu_dsp_frame(MCPXAPUState *d,
              * counts. This is not what a real EP does; it is the cheapest
              * mixdown that stops discarding audio. */
             float left, right;
-            if (mcpx_apu_mixdown_all()) {
+            if (mcpx_apu_mixdown_all() && mcpx_apu_mixdown_speakers()) {
+                /* ITU-R BS.775 stereo downmix of XDK speaker bins (0..9):
+                 * 0 FL, 1 FR, 2 Center, 3 LFE, 4 BL, 5 BR, 6..9 crosstalk FL/FR/BL/BR.
+                 * Center (2) and rears (4,5) at -3 dB (0.7071) to both sides;
+                 * LFE (3) omitted to prevent right-channel clipping;
+                 * I3DL2 reverb send (10) at -6 dB (0.5) to both sides;
+                 * FX sends (11..31) even/odd. */
+                const float g = 0.70710678f;
+                left  = mixbins[0][i] + g * (mixbins[2][i] + mixbins[4][i])
+                      + mixbins[6][i] + g * mixbins[8][i] + 0.5f * mixbins[10][i];
+                right = mixbins[1][i] + g * (mixbins[2][i] + mixbins[5][i])
+                      + mixbins[7][i] + g * mixbins[9][i] + 0.5f * mixbins[10][i];
+                for (int b = 11; b < NUM_MIXBINS; ++b) {
+                    if (b & 1) right += mixbins[b][i];
+                    else       left  += mixbins[b][i];
+                }
+            } else if (mcpx_apu_mixdown_all()) {
                 left = 0.0f;
                 right = 0.0f;
                 for (int b = 0; b < NUM_MIXBINS; ++b) {
