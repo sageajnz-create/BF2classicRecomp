@@ -65,6 +65,8 @@ uint32_t nv2a_vsh_batch_inputs(int *can_reuse);
 uint32_t nv2a_vsh_export_gpu(uint32_t *ins, uint32_t capacity,
                              float (*constants)[4], uint32_t const_count);
 uint32_t nv2a_vsh_program_revision(void);
+uint32_t nv2a_vsh_const_revision(void);
+const float (*nv2a_vsh_constants_ptr(void))[4];
 
 /* Direct access, for the self-test. */
 void nv2a_vsh_set_constant(uint32_t index, const float v[4]);

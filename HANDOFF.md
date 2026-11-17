@@ -2,6 +2,100 @@
 
 Checkpoint from 18 November 2026 NZDT. The goal is a fully playable and modern native Windows port of the user's original Xbox copy. Use the existing build tree and extracted files.
 
+> **HOST RULE (CRITICAL):** Never touch, modify, or query Windows host audio settings or audio devices under any circumstances. Keep copyrighted game assets (`*.iso`, `*.xbe`, `game_files/`, `logs/`, `.obj`) out of Git at all times.
+
+## MILESTONE: 60+ FPS AAA NATIVE PC REMASTER (HLSL SHADER JIT, 2x–4x HD INTERNAL RESOLUTION, PERSISTENT DXBC CACHE & 16:9 HiDPI) — 18 November 2026 NZDT
+
+### 1. Shipped, Tested, Deployed & Pushed (`origin/main` @ `e2015bc`)
+
+Two major commits are verified, built into `bf2_recomp/game_files/swbf2_recomp.exe`, and pushed to `origin/main`:
+
+- **Commit `35d3674` — `perf(gpu/nv2a): dynamic ring streaming, DrawIndexed, HLSL shader JIT, VB rebasing & parallel kickoff (78.9 FPS)`:**
+  - **Dynamic Ring-Buffered Streaming & Hardware `DrawIndexed`** (`bf2_recomp/src/gpu_world.c`, `bf2_recomp/src/nv2a_vsh_gpu.hlsl`, `bf2_recomp/src/nv2a_vsh_gather.hlsli`): Replaced `D3D11_USAGE_DEFAULT` + partial `UpdateSubresource(&box)` uploads with `D3D11_USAGE_DYNAMIC` ring buffers (`WRITE_NO_OVERWRITE` / `WRITE_DISCARD`) and added a 16 MB dynamic `DXGI_FORMAT_R32_UINT` hardware index buffer (`DrawIndexed` + `vs_gather_transform_indexed`), restoring the GPU post-transform vertex cache. Combat FPS jumped **24.5 → 51.6 FPS** (`world_ms` 40.8 → 19.7 ms/flip).
+  - **Native HLSL Vertex Shader & Pixel Combiner JIT Compiler + O(1) Cache** (`bf2_recomp/src/gpu_shader_jit.c`, `bf2_recomp/src/gpu_shader_jit.h`, `bf2_recomp/CMakeLists.txt`, `tools/xboxrecomp/src/kernel/nv2a_vsh_interp.{c,h}`, `nv2a_world_backend.h`): Compiles unique NV2A vertex programs (gathering only referenced input slots) and register combiners (sampling only active texture stages + specialized alpha test) to straight-line SM 5.0 HLSL (`vsh=65, ps=31`, 0 compile failures), with interpreter fallback (`RECOMP_VSH_JIT=0` / `RECOMP_PS_JIT=0`) and an O(1) 64-slot `program_revision` fast-path lookup.
+  - **Vertex Buffer Sub-Range Rebasing** (`tools/xboxrecomp/src/kernel/nv2a_pb_exec.c`): Rebases non-inline guest vertex uploads to `[min_idx..max_idx]` instead of uploading from index `0`.
+  - **Parallel NV2A KickOff Ack & INI Precedence** (`bf2_recomp/src/main.c`, `tools/xboxrecomp/src/kernel/xbox_memory_layout.c`): Enabled `RECOMP_PB_KICK_ACK=1` by default (respecting `nv2a_pb_exec_flip_poll()`), eliminating the ~25% guest spin stall in `sub_0042A0A0` (`NV2A 0x100410`). Fixed `bf2_recomp.ini` precedence (`env vars > bf2_recomp.ini > compiled defaults`) and comment skipping.
+- **Commit `e2015bc` — `feat(aaa): native 2x-4x HD internal resolution, persistent DXBC shader cache, edge-to-edge 16:9 HiDPI window`:**
+  - **Native HD Internal 3D Resolution Scaling (`res_scale=2`, 1x–4x)** (`bf2_recomp/src/gpu_world.c`): Scales main `640×480` color/depth RTs natively to `640*S × 480*S` (`1280×960` at default 2x, up to `2560×1920` at 4x), with HD color/depth+stencil block upload/readback, snapshot feedback scaling, and visibility count normalization (`pixels / S²`, nonzero clamped `>= 1`).
+  - **Persistent On-Disk DXBC Shader Cache** (`bf2_recomp/src/gpu_shader_jit.c`): Saves/loads compiled DXBC bytecode in `<save_dir>\bf2_shader_cache.bin` (magic `BFJC` v1, toggleable via `shader_cache=1` / `RECOMP_SHADER_CACHE`).
+  - **Edge-to-Edge 16:9 Windowing & Per-Monitor-V2 HiDPI** (`tools/xboxrecomp/src/video/fb_present.c`, `bf2_recomp/src/main.c`, `bf2_recomp.ini`): Sizes initial window to match `RECOMP_ASPECT` (`1280×720` at `window_scale=2`, `1920×1080` at `window_scale=3`) with zero letterbox bars; Per-Monitor-V2 DPI awareness; window title `"Star Wars: Battlefront II - Native PC Recomp"`.
+
+### 2. Verified Benchmark Progression & Test Results
+
+| Run | Mode / Resolution | Weighted FPS | Median / Range | Notes |
+| --- | --- | --- | --- | --- |
+| `gpu-pipe-uav` (baseline) | 1x (`640×480`), interpreter | 24.5 FPS | — | `world_ms` 40.8 ms/flip |
+| `gpu-ring-indexed` | 1x (`640×480`), dynamic rings + `DrawIndexed` | 51.6 FPS | — | `world_ms` 19.7 ms/flip |
+| `gpu-aaa-60` (12 combat windows) | 1x (`640×480`), HLSL JIT + VB rebase + parallel kickoff | **78.9 FPS** | 77.0 FPS (65.8–95.8 peak) | `world_ms` 9.2–10.6 ms/flip; `present-67583.bmp` (28,747 unique colors) |
+| `gpu-hd-cold` | 2x HD (`1280×960` → `1280×720` 16:9) | 75–81.6 FPS (normal) | — | Cold shader compile; `present-65824.bmp` (`1280×720`, 10,146 unique colors, zero black bars) |
+| `gpu-hd-warm` / `gpu-hd-warm2` (12 combat windows) | 2x HD (`1280×960` → `1280×720` 16:9), warm cache | **62.8–64.5 FPS** (all 12w) / **70.3–82.4 FPS** (w1–w6) | 50–60 FPS in 1,100-batch / 106M-vert firefights (w7–w12) | Loaded `75 VSH + 33 PS` in **48.8 ms**; **2,715,969 VSH hits / 1 miss**, **2,116,999 PS hits / 1 miss** |
+
+- **Component Regression Tests (`ctest`, 9/9 PASS on `e2015bc`):**
+  - `gpu_world` (7/7): `gpu-world-regression`, `gpu-world-span`, `gpu-world-pipelined`, `gpu-world-uav`, `gpu-world-nojit`, `gpu-world-hd` (`RECOMP_RES_SCALE=2`), plus all standard checks.
+  - `gpu_vsh` (2/2): `gpu-vsh-regression`, `gpu-gather-regression`.
+- **Deployed Binaries & Config (matching `HEAD` `e2015bc`):**
+  - `bf2_recomp/game_files/swbf2_recomp.exe` SHA-256: `DEC957BAF917990C3DAA42BC0DACC3F8B4CA23A882D2837A304EBD1095A69FA4`
+  - `bf2_recomp/game_files/bf2_recomp.ini` SHA-256: `470B55E1E74869A7CD7BF2051173F70681939C8F86D583AE33574EC6D753B753`
+
+### 3. Key Technical Findings (Do Not Repeat)
+
+- **EEPROM `XC_VIDEO_FLAGS_WIDESCREEN` (`0x00010000`) hangs BF2 boot:** Returning `XC_VIDEO_FLAGS_WIDESCREEN` from `xbox_ExQueryNonVolatileSetting(XC_VIDEO)` caused XDK `IDirect3D8::CreateDevice` to allocate and immediately free its 2400 KB backbuffer and stall at 0 draws / 0 flips. Keep `XC_VIDEO` at `XC_VIDEO_FLAGS_60Hz` (already reverted in `tools/xboxrecomp/src/kernel/kernel_xbox.c`).
+- **`world_ms` vs `flip_pcall_ms`:** Because `gt_begin_world` fires immediately after the previous `Present`, when the GPU is caught up waiting on the CPU, `world_ms` reflects CPU frame wall time on the GPU clock; `flip_pcall_ms` (~0.3 ms/flip) is the true GPU catch-up indicator.
+- **Root cause of the 50–54 FPS dip in 1,100-batch firefights (`gpu-hd-warm2` Windows 7–12):** `[WORLD-TIMING] reason=1 160x120/2560` and `[D3D11-WORLD-SYNC] copies: col=157` proved that Battlefront II's in-combat quarter-res bloom/blur post-process pass (`160×120` sub-rect on a `pitch=2560` 640×480 surface) was rejected by `is_640x480` and fell back to the CPU rasterizer, triggering **156 synchronous HD GPU→CPU color readbacks** during heavy combat.
+
+---
+
+## MILESTONE: PASS 3 COMPLETE — 100% GPU-RESIDENT COMBAT BLOOM, ZERO-COPY VSH CONSTANTS, TEARING PRESENTATION, FPS PACER & 88–104 FPS COMBAT — 18 November 2026 NZDT
+
+### 1. Key Engineering Accomplishments
+
+1. **Elimination of Quarter-Res Bloom CPU Fallback & Color Readbacks:**
+   - **Root Cause:** Battlefront II's combat bloom/blur post-processing uses a `160×120` sub-rect on a `pitch=2560` 640×480 surface. Previously rejected by `is_640x480`, triggering 156 synchronous HD GPU→CPU color readbacks (`copies: col=157`) per frame during intense firefights.
+   - **Resolution:**
+     - Extended pushbuffer checks to recognize any `pitch == 2560` sub-viewport (`clip_w <= 640 && clip_h <= 480`).
+     - Kept sub-rect resident on the scaled HD backing surface (`dw * sc`, `dh * sc`).
+     - Added dynamic scissor rect management (`set_scissor()`) before draw calls, clears, and presentation blits to ensure precise pixel bounding without clipping.
+     - Scaled sub-rect UV coordinates in `texture_scale` when `is_resident_rt(texture) == 2` (`(float)texture->desc.width / (float)WIDTH`).
+   - **Result:** Synchronous GPU→CPU color copies dropped from **157 down to 1**!
+
+2. **Constant Buffer Revision Tracking & Zero-Copy VSH Constants:**
+   - Populated `draw.const_revision` and exposed `nv2a_vsh_constants_ptr()`.
+   - In `draw_world_program()`, when `draw->const_revision && draw->const_revision == world.last_const_rev`, the 4 KB `memcmp` and dynamic ring buffer re-upload are completely skipped.
+
+3. **Variable Refresh Rate / Tearing Presentation (`DXGI_PRESENT_ALLOW_TEARING`):**
+   - Queried `IDXGIFactory5` for `DXGI_FEATURE_PRESENT_ALLOW_TEARING` at swapchain creation and `ResizeBuffers`.
+   - Enabled `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` and passed `DXGI_PRESENT_ALLOW_TEARING` during flip-model presentation when `vsync=0`, eliminating present stutter and latency on VRR/G-Sync/FreeSync displays.
+
+4. **In-Game Screenshot Capture (F12) & Real-Time Title Bar Stats (`show_fps=1`):**
+   - Implemented thread-safe `xbox_FramebufferWindowConsumeScreenshot()` on F12 key press, writing clean BMP captures to `screenshots/` without disrupting rendering.
+   - Lock-free title bar updater displays real-time FPS, frame time, and resolution scale (`"Star Wars: Battlefront II - [94.4 FPS | 10.6 ms | 2x HD]"`).
+
+5. **Precision Hybrid QPC Frame Pacer (`fps_limit`):**
+   - Implemented hybrid `Sleep(1)` + `YieldProcessor()` spin pacer for smooth frame times at user-configured caps (e.g. 60, 120, 144, 240, or 0 for uncapped).
+
+6. **Native PC Controls Quality-of-Life:**
+   - Connected `deadzone` in `bf2_recomp.ini` to both `RECOMP_MKB_DZ` and `RECOMP_MKB_DEADZONE`.
+
+### 2. Verified Benchmark Progression (12 Heavy Combat Windows)
+
+| Metric | Pass 2 Baseline | Pass 3 Verified | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Weighted FPS** | 68.4 FPS | **87.93 FPS** | **+28.5%** |
+| **Median Window FPS** | 71.0 FPS | **94.41 FPS** | **+33.0%** |
+| **Heavy Combat (Windows 5–12)** | 50–54 FPS | **92.2–104.2 FPS** | **+84%** |
+| **Color Readbacks / Flip** | 157 copies | **1 copy** | **-99.4%** |
+| **Presented Flips (61.12s)** | ~4,100 flips | **5,374 flips** | **+31%** |
+| **Component Regression Tests** | 9/9 PASS | **9/9 PASS (100%)** | Verified |
+
+- **Deployed Release Executable:**
+  - `bf2_recomp/build/Release/swbf2_recomp.exe` & `bf2_recomp/game_files/swbf2_recomp.exe`
+  - SHA-256: `4A9B01100ED3FB4CF39CBE0E7E2D3216C1B89DA7ED44313B901162DB2D33D4DD`
+- **Configuration:**
+  - `bf2_recomp.ini` & `bf2_recomp/game_files/bf2_recomp.ini`
+  - SHA-256: `F412A130CFBF88D76DE632C94A639C8626946F6ED67BB8208AF248C9B671C987`
+
+---
+
 ## MILESTONE: UAV VISIBILITY & SWITCH-BASED VSH OPTIMIZATION SURGES COMBAT FPS — 18 November NZDT
 
 - **1. Occlusion Query Stalls Eliminated via Early-Z UAV Counting (`RECOMP_VISIBILITY_UAV=1`):**

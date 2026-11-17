@@ -1,7 +1,7 @@
 #define CINTERFACE
 #define COBJMACROS
 #include <d3d11.h>
-#include <dxgi1_3.h>
+#include <dxgi1_5.h>
 #include <d3dcompiler.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,6 +133,8 @@ static struct {
     UINT vsh_ib_cap, vsh_ib_pos;
     ID3D11Buffer *bound_ib;
     int can_no_overwrite_srv;
+    uint32_t last_const_rev;
+    D3D11_RECT bound_scissor;
     /* The vertex buffer stays mapped across draws: mapping and unmapping once
      * per guest batch cost more than the copy does, and a batch ring inside
      * one WRITE_DISCARD mapping is the same buffer the GPU already reads.
@@ -195,6 +197,7 @@ static struct {
     ID3D11RenderTargetView *swapchain_rtv;  /* GetBuffer(0): flip chains proxy it */
     unsigned swapchain_buffers;
     int swapchain_flip;
+    int swapchain_tearing;
     ID3D11VertexShader *present_vs;
     ID3D11PixelShader *present_ps;
     ID3D11SamplerState *present_samp;
@@ -574,6 +577,7 @@ static int init_world(void)
     rasterizer.FillMode = D3D11_FILL_SOLID;
     rasterizer.CullMode = D3D11_CULL_NONE;
     rasterizer.DepthClipEnable = TRUE;
+    rasterizer.ScissorEnable = TRUE;
     if (!check_gpu(ID3D11Device_CreateRasterizerState(world.device, &rasterizer, &world.rasterizer), "rasterizer"))
         return 0;
     if (!create_surface_texture(DXGI_FORMAT_B8G8R8A8_UNORM, 0, &world.color_readback) ||
@@ -709,6 +713,16 @@ static void hd_blit_reset_state(void)
     world.bound_stencil_ref = 0;
 }
 
+static void set_scissor(uint32_t w, uint32_t h)
+{
+    D3D11_RECT r = {0, 0, (LONG)w, (LONG)h};
+    if (world.bound_scissor.left != r.left || world.bound_scissor.top != r.top ||
+        world.bound_scissor.right != r.right || world.bound_scissor.bottom != r.bottom) {
+        ID3D11DeviceContext_RSSetScissorRects(world.context, 1, &r);
+        world.bound_scissor = r;
+    }
+}
+
 static void hd_blit_color(ID3D11ShaderResourceView *src, ID3D11RenderTargetView *dst,
                           uint32_t dst_w, uint32_t dst_h, int linear)
 {
@@ -718,6 +732,7 @@ static void hd_blit_color(ID3D11ShaderResourceView *src, ID3D11RenderTargetView 
     unbind_surfaces();
     ID3D11DeviceContext_OMSetRenderTargets(world.context, 1, &dst, NULL);
     ID3D11DeviceContext_RSSetViewports(world.context, 1, &vp);
+    set_scissor(dst_w, dst_h);
     ID3D11DeviceContext_IASetInputLayout(world.context, NULL);
     ID3D11DeviceContext_IASetVertexBuffers(world.context, 0, 0, NULL, NULL, NULL);
     ID3D11DeviceContext_IASetPrimitiveTopology(world.context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1226,7 +1241,8 @@ static ID3D11ShaderResourceView *texture_for(const Nv2aWorldTexture *t, ColorSur
     TextureEntry *entry = &world.textures[0];
     HRESULT hr;
 
-    int is_rt_640 = (d->color == 0x12 && d->width == WIDTH && d->height == HEIGHT && d->pitch == WIDTH * 4);
+    int is_rt_640 = (d->color == 0x12 && d->pitch == WIDTH * 4 &&
+                     d->width > 0 && d->width <= WIDTH && d->height > 0 && d->height <= HEIGHT);
     int is_rt_64 = (d->color == 0x12 && d->width == 64 && d->height == 64 && d->pitch == 256);
     if (is_rt_640 || is_rt_64) {
         for (int i = 0; i < COLOR_SLOTS; i++) {
@@ -1292,6 +1308,7 @@ static ID3D11ShaderResourceView *texture_for(const Nv2aWorldTexture *t, ColorSur
             mru->color == d->color && mru->byte_count == t->byte_count &&
             mru->cube == d->cube && mru->face_stride == d->face_stride &&
             mru->sig0 == sig0 && mru->sig1 == sig1 && mru->sig2 == sig2 &&
+            mru->sig3 == sig3 && mru->sig4 == sig4 &&
             !memcmp(mru->source, t->bytes, t->byte_count)) {
             mru->used = world.draws + 1;
             return mru->view;
@@ -1305,6 +1322,7 @@ static ID3D11ShaderResourceView *texture_for(const Nv2aWorldTexture *t, ColorSur
             candidate->color == d->color && candidate->byte_count == t->byte_count &&
             candidate->cube == d->cube && candidate->face_stride == d->face_stride &&
             candidate->sig0 == sig0 && candidate->sig1 == sig1 && candidate->sig2 == sig2 &&
+            candidate->sig3 == sig3 && candidate->sig4 == sig4 &&
             !memcmp(candidate->source, t->bytes, t->byte_count)) {
             candidate->used = world.draws + 1;
             if ((unsigned)stage < 4)
@@ -1542,20 +1560,23 @@ static int clear_color(uint32_t *target, uint32_t argb, uint32_t mask, uint32_t 
         return 0;
     if (!width) width = WIDTH;
     if (!height) height = HEIGHT;
+    uint32_t surf_w = (width == 64 && height == 64) ? 64u : WIDTH;
+    uint32_t surf_h = (width == 64 && height == 64) ? 64u : HEIGHT;
+    int sub_rect = (width < surf_w || height < surf_h);
     end_visibility_span();
     for (int i = 0; i < COLOR_SLOTS; i++) {
         if (world.color[i].host == target &&
-            world.color[i].width == width && world.color[i].height == height) {
+            world.color[i].width == surf_w && world.color[i].height == surf_h) {
             surface = &world.color[i];
             break;
         }
     }
     if (!surface)
-        surface = bind_color(target, width, height);
+        surface = bind_color(target, surf_w, surf_h);
     if (!surface)
         return 0;
     nv2a_rc_unpack(argb, value);
-    if (mask == 0x01010101) {
+    if (mask == 0x01010101 && !sub_rect) {
         ID3D11DeviceContext_ClearRenderTargetView(world.context, surface->target, value);
     } else {
         Nv2aRenderState state = {0};
@@ -1564,7 +1585,9 @@ static int clear_color(uint32_t *target, uint32_t argb, uint32_t mask, uint32_t 
         blend = blend_for(&state);
         if (!blend)
             return 0;
+        uint32_t sc = surface_scale(surf_w, surf_h);
         bind_targets(surface, NULL);
+        set_scissor(width * sc, height * sc);
         update_cbuffer(world.clear_value, value, sizeof value);
         ID3D11DeviceContext_IASetInputLayout(world.context, NULL);
         ID3D11DeviceContext_VSSetShader(world.context, world.clear_vs, NULL, 0);
@@ -2242,8 +2265,10 @@ static int is_resident_rt(const Nv2aWorldTexture *t)
         if (cs->host && (const uint8_t *)cs->host == t->bytes) {
             uint32_t sw = cs->width ? cs->width : WIDTH;
             uint32_t sh = cs->height ? cs->height : HEIGHT;
-            if (t->desc.width == sw && t->desc.height == sh && t->desc.pitch == sw * 4)
-                return 1;
+            if (t->desc.pitch == sw * 4 &&
+                t->desc.width > 0 && t->desc.width <= sw &&
+                t->desc.height > 0 && t->desc.height <= sh)
+                return (sw == WIDTH && sh == HEIGHT) ? 2 : 1;
         }
     }
     return 0;
@@ -2323,8 +2348,11 @@ static int draw_world(const Nv2aWorldDraw *draw)
     }
     uint32_t dw = draw->width ? draw->width : WIDTH;
     uint32_t dh = draw->height ? draw->height : HEIGHT;
-    color = bind_color(draw->color, dw, dh);
-    depth = draw->depth ? bind_depth(draw->depth, draw->stencil, draw->depth_stride, dw, dh) : NULL;
+    uint32_t surf_w = (dw == 64 && dh == 64) ? 64u : WIDTH;
+    uint32_t surf_h = (dw == 64 && dh == 64) ? 64u : HEIGHT;
+    uint32_t sc = surface_scale(surf_w, surf_h);
+    color = bind_color(draw->color, surf_w, surf_h);
+    depth = draw->depth ? bind_depth(draw->depth, draw->stencil, draw->depth_stride, surf_w, surf_h) : NULL;
     blend = blend_for(s);
     depth_state = depth_for(s, draw->depth);
     if (!color || !blend || !depth_state || (draw->depth && !depth))
@@ -2384,9 +2412,15 @@ static int draw_world(const Nv2aWorldDraw *draw)
         samplers[i] = sampler_for(texture);
         if (!samplers[i])
             goto release_bindings;
-        info.texture_scale[i][0] = texture->normalized ? 1.0f : 1.0f / texture->desc.width;
-        info.texture_scale[i][1] = texture->normalized ? 1.0f : 1.0f / texture->desc.height;
-        info.texture_scale[i][2] = 1.0f;
+        if (is_resident_rt(texture) == 2) {
+            info.texture_scale[i][0] = texture->normalized ? ((float)texture->desc.width / (float)WIDTH) : (1.0f / (float)WIDTH);
+            info.texture_scale[i][1] = texture->normalized ? ((float)texture->desc.height / (float)HEIGHT) : (1.0f / (float)HEIGHT);
+            info.texture_scale[i][2] = 1.0f;
+        } else {
+            info.texture_scale[i][0] = texture->normalized ? 1.0f : 1.0f / texture->desc.width;
+            info.texture_scale[i][1] = texture->normalized ? 1.0f : 1.0f / texture->desc.height;
+            info.texture_scale[i][2] = 1.0f;
+        }
     }
     nv2a_rc_unpack(s->blend_color, factors);
     if (constant_alpha)
@@ -2473,6 +2507,7 @@ static int draw_world(const Nv2aWorldDraw *draw)
         memcpy(world.bound_factors, factors, sizeof factors);
         ID3D11DeviceContext_OMSetBlendState(world.context, blend, factors, UINT32_MAX);
     }
+    set_scissor(dw * sc, dh * sc);
     if (query)
         ID3D11DeviceContext_Begin(world.context, (ID3D11Asynchronous *)query);
     ID3D11DeviceContext_Draw(world.context, draw->vertex_count, base);
@@ -2761,8 +2796,11 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
     }
     uint32_t dw = draw->width ? draw->width : WIDTH;
     uint32_t dh = draw->height ? draw->height : HEIGHT;
-    color = bind_color(draw->color, dw, dh);
-    depth = draw->depth ? bind_depth(draw->depth, draw->stencil, draw->depth_stride, dw, dh) : NULL;
+    uint32_t surf_w = (dw == 64 && dh == 64) ? 64u : WIDTH;
+    uint32_t surf_h = (dw == 64 && dh == 64) ? 64u : HEIGHT;
+    uint32_t sc = surface_scale(surf_w, surf_h);
+    color = bind_color(draw->color, surf_w, surf_h);
+    depth = draw->depth ? bind_depth(draw->depth, draw->stencil, draw->depth_stride, surf_w, surf_h) : NULL;
     blend = blend_for(s);
     depth_state = depth_for(s, draw->depth);
     if (!color || !blend || !depth_state || (draw->depth && !depth))
@@ -2811,9 +2849,15 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         samplers[i] = sampler_for(texture);
         if (!samplers[i])
             goto release_bindings;
-        info.texture_scale[i][0] = texture->normalized ? 1.0f : 1.0f / texture->desc.width;
-        info.texture_scale[i][1] = texture->normalized ? 1.0f : 1.0f / texture->desc.height;
-        info.texture_scale[i][2] = 1.0f;
+        if (is_resident_rt(texture) == 2) {
+            info.texture_scale[i][0] = texture->normalized ? ((float)texture->desc.width / (float)WIDTH) : (1.0f / (float)WIDTH);
+            info.texture_scale[i][1] = texture->normalized ? ((float)texture->desc.height / (float)HEIGHT) : (1.0f / (float)HEIGHT);
+            info.texture_scale[i][2] = 1.0f;
+        } else {
+            info.texture_scale[i][0] = texture->normalized ? 1.0f : 1.0f / texture->desc.width;
+            info.texture_scale[i][1] = texture->normalized ? 1.0f : 1.0f / texture->desc.height;
+            info.texture_scale[i][2] = 1.0f;
+        }
     }
     nv2a_rc_unpack(s->blend_color, factors);
     if (constant_alpha)
@@ -2899,8 +2943,13 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         if (!update_vsh_buffer(&world.vsh_ins, draw->instruction_count * 44, 4, draw->instructions, &ins_base))
             goto release_bindings;
     }
-    if (!update_vsh_buffer(&world.vsh_const, draw->constant_count, 16, draw->constants, &const_base))
-        goto release_bindings;
+    if (draw->const_revision && draw->const_revision == world.last_const_rev && world.vsh_const.buffer) {
+        const_base = world.vsh_const.last_base;
+    } else {
+        if (!update_vsh_buffer(&world.vsh_const, draw->constant_count, 16, draw->constants, &const_base))
+            goto release_bindings;
+        world.last_const_rev = draw->const_revision;
+    }
     if (!update_vsh_buffer(&world.vsh_words, (draw->vertex_bytes + 3) / 4, 4, draw->vertex_words, &words_base))
         goto release_bindings;
     if (!update_vsh_buffer(&world.vsh_attrs, 16, 16, draw->attributes, &attrs_base))
@@ -3008,6 +3057,7 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
         world.bound_ib = world.vsh_ib;
     }
 
+    set_scissor(dw * sc, dh * sc);
     if (query)
         ID3D11DeviceContext_Begin(world.context, (ID3D11Asynchronous *)query);
     ID3D11DeviceContext_DrawIndexed(world.context, draw->index_count, start_index, 0);
@@ -3251,7 +3301,13 @@ static void capture_present(const char *dir, unsigned n, const void *target, con
 /* Called with the back buffer already unbound, just before Present. */
 static void screenshot_tick(const void *target, const ColorSurface *surface)
 {
+    extern int xbox_FramebufferWindowConsumeScreenshot(void);
+    int f12 = xbox_FramebufferWindowConsumeScreenshot();
     const char *dir = screenshot_dir();
+    if (!dir && f12) {
+        dir = "screenshots";
+        CreateDirectoryA(dir, NULL);
+    }
     if (!dir)
         return;
     static int s_ready;
@@ -3269,7 +3325,7 @@ static void screenshot_tick(const void *target, const ColorSurface *surface)
         }
     }
     unsigned n = ++world.present_count;
-    int want = s_every && n % s_every == 0;
+    int want = f12 || (s_every && n % s_every == 0);
     if (s_nsecs) {
         static ULONGLONG s_t0;
         ULONGLONG now = GetTickCount64();
@@ -3286,6 +3342,8 @@ static void screenshot_tick(const void *target, const ColorSurface *surface)
     }
     if (want) {
         capture_present(dir, n, target, surface);
+        if (f12)
+            fprintf(stderr, "[D3D11-WORLD] F12 screenshot saved to %s\\present-%05u.bmp\n", dir, n);
         world.trace_draws = 1;
         fprintf(stderr, "[TRACE-FRAME] Triggered trace_draws for next frame after present #%u\n", n);
     }
@@ -3302,7 +3360,8 @@ static int init_swapchain(HWND hwnd)
         if (cw != world.swapchain_w || ch != world.swapchain_h) {
             release_swapchain_rtvs();
             s_gt.resizes++;
-            if (SUCCEEDED(IDXGISwapChain_ResizeBuffers(world.swapchain, 0, cw, ch, DXGI_FORMAT_UNKNOWN, 0)) &&
+            UINT flags = world.swapchain_tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+            if (SUCCEEDED(IDXGISwapChain_ResizeBuffers(world.swapchain, 0, cw, ch, DXGI_FORMAT_UNKNOWN, flags)) &&
                 create_swapchain_rtvs()) {
                 world.swapchain_w = cw;
                 world.swapchain_h = ch;
@@ -3338,6 +3397,15 @@ static int init_swapchain(HWND hwnd)
     if (FAILED(hr))
         return 0;
 
+    static const GUID s_IID_IDXGIFactory5 = {0x7632e1bb, 0x5d1e, 0x4016, {0xb7, 0xe9, 0x32, 0x6f, 0x01, 0x14, 0x66, 0xd2}};
+    BOOL allow_tearing = FALSE;
+    IDXGIFactory5 *dxgi_fac5 = NULL;
+    if (SUCCEEDED(IDXGIFactory2_QueryInterface(dxgi_fac, &s_IID_IDXGIFactory5, (void **)&dxgi_fac5))) {
+        IDXGIFactory5_CheckFeatureSupport(dxgi_fac5, DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allow_tearing, sizeof(allow_tearing));
+        IDXGIFactory5_Release(dxgi_fac5);
+    }
+    world.swapchain_tearing = allow_tearing ? 1 : 0;
+
     /* Flip model with a small buffer ring: the old 1-buffer DISCARD chain
      * stalled ~58 ms per Present when the CPU ran ahead of display
      * consumption (measured with no occlusion queries pacing the walk).
@@ -3362,6 +3430,8 @@ static int init_swapchain(HWND hwnd)
         sd.Scaling = DXGI_SCALING_STRETCH;
         sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
         sd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        if (world.swapchain_tearing)
+            sd.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         IDXGISwapChain1 *sc1 = NULL;
         hr = IDXGIFactory2_CreateSwapChainForHwnd(dxgi_fac, (IUnknown *)world.device, hwnd,
                                                   &sd, NULL, NULL, &sc1);
@@ -3542,6 +3612,7 @@ static int present_world(const void *target, uint32_t pitch)
     vp.MinDepth = 0;
     vp.MaxDepth = 1;
     ID3D11DeviceContext_RSSetViewports(world.context, 1, &vp);
+    set_scissor(world.swapchain_w, world.swapchain_h);
 
     /* The blit is not guest geometry: never fold it into a visibility span. */
     end_visibility_span();
@@ -3562,12 +3633,15 @@ static int present_world(const void *target, uint32_t pitch)
 
     const char *v = getenv("RECOMP_PRESENT_VSYNC");
     UINT sync_interval = (v && v[0] == '1') ? 1 : 0;
+    UINT present_flags = 0;
+    if (sync_interval == 0 && world.swapchain_tearing)
+        present_flags |= DXGI_PRESENT_ALLOW_TEARING;
     int64_t p2 = gt ? world_ticks() : 0;
     /* Flip-model chains must not be presented with the back buffer still
      * bound: DXGI needs every reference released, so unbind first. */
     ID3D11DeviceContext_OMSetRenderTargets(world.context, 0, NULL, NULL);
     screenshot_tick(target, surface);
-    HRESULT phr = IDXGISwapChain_Present(world.swapchain, sync_interval, 0);
+    HRESULT phr = IDXGISwapChain_Present(world.swapchain, sync_interval, present_flags);
     if (getenv("RECOMP_PRESENT_DEBUG")) {
         static unsigned s_present_dbg;
         if (s_present_dbg < 8) {
@@ -3582,6 +3656,59 @@ static int present_world(const void *target, uint32_t pitch)
             fprintf(stderr, "[D3D11-WORLD] present failed (0x%08lX) buffers=%u flip=%d\n",
                     (unsigned long)phr, world.swapchain_buffers, world.swapchain_flip);
         }
+    }
+
+    static int s_show_fps = -1;
+    if (s_show_fps < 0) {
+        const char *e = getenv("RECOMP_SHOW_FPS");
+        s_show_fps = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (s_show_fps) {
+        static int64_t s_fps_t0 = 0;
+        static uint32_t s_fps_frames = 0;
+        if (!s_fps_t0) s_fps_t0 = world_ticks();
+        s_fps_frames++;
+        int64_t now = world_ticks();
+        double elapsed_sec = (double)(now - s_fps_t0) / (double)world.frequency;
+        if (elapsed_sec >= 0.5) {
+            double fps = (double)s_fps_frames / elapsed_sec;
+            char title[256];
+            uint32_t rs = world_res_scale();
+            _snprintf_s(title, sizeof title, _TRUNCATE,
+                        "Star Wars: Battlefront II - Native PC Recomp [%.1f FPS | %ux HD]",
+                        fps, rs);
+            extern void xbox_FramebufferWindowSetTitleText(const char *title);
+            xbox_FramebufferWindowSetTitleText(title);
+            s_fps_t0 = now;
+            s_fps_frames = 0;
+        }
+    }
+
+    static int s_fps_limit = -2;
+    if (s_fps_limit == -2) {
+        const char *e = getenv("RECOMP_FPS_LIMIT");
+        s_fps_limit = (e && *e) ? atoi(e) : 0;
+    }
+    if (s_fps_limit > 0 && world.frequency) {
+        static int64_t s_last_frame_tick = 0;
+        int64_t target_interval = world.frequency / s_fps_limit;
+        if (s_last_frame_tick > 0) {
+            int64_t target_tick = s_last_frame_tick + target_interval;
+            int64_t cur_tick = world_ticks();
+            while (cur_tick < target_tick) {
+                int64_t remaining_ticks = target_tick - cur_tick;
+                int64_t remaining_ms = (remaining_ticks * 1000) / world.frequency;
+                if (remaining_ms > 2) {
+                    Sleep((DWORD)(remaining_ms - 2));
+                } else if (remaining_ms > 0) {
+                    SwitchToThread();
+                } else {
+                    YieldProcessor();
+                }
+                cur_tick = world_ticks();
+            }
+        }
+        s_last_frame_tick = world_ticks();
     }
     int64_t p3 = gt ? world_ticks() : 0;
     if (gt) {

@@ -44,6 +44,7 @@
 /* State defined with the other interpreter state below, declared here so
  * raw_capture can read it. */
 static uint32_t s_program_revision;
+static uint32_t s_const_revision;
 static float    s_const[NV2A_VSH_CONSTANTS][4];
 #define VSH_RAW_MAGIC   0x52485356u   /* "VSHR" */
 #define VSH_RAW_MAX_PROG 64
@@ -184,8 +185,10 @@ void nv2a_vsh_set_constant_load(uint32_t index)
 
 void nv2a_vsh_constant_word(uint32_t word)
 {
-    if (s_const_load < NV2A_VSH_CONSTANTS)
+    if (s_const_load < NV2A_VSH_CONSTANTS) {
         memcpy(&s_const[s_const_load][s_const_word], &word, 4);
+        s_const_revision++;
+    }
     else if (vsh_dump_enabled()) {
         static int warned;
         if (warned++ < 8)
@@ -208,8 +211,10 @@ void nv2a_vsh_constant_word(uint32_t word)
 
 void nv2a_vsh_set_constant(uint32_t index, const float v[4])
 {
-    if (index < NV2A_VSH_CONSTANTS)
+    if (index < NV2A_VSH_CONSTANTS) {
         memcpy(s_const[index], v, sizeof s_const[index]);
+        s_const_revision++;
+    }
 }
 
 void nv2a_vsh_set_instruction(uint32_t slot, const uint32_t words[4])
@@ -292,8 +297,10 @@ const float *nv2a_vsh_constant(uint32_t index)
 
 void nv2a_vsh_constant_component(uint32_t index, uint32_t comp, uint32_t word)
 {
-    if (index < NV2A_VSH_CONSTANTS && comp < 4)
+    if (index < NV2A_VSH_CONSTANTS && comp < 4) {
         memcpy(&s_const[index][comp], &word, 4);
+        s_const_revision++;
+    }
 }
 
 /* ---- execution ----------------------------------------------------------- */
@@ -686,8 +693,10 @@ static int vsh_run_decoded(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *ou
         if (d->omask) {
             const vec4 *src = d->from_ilu ? &ires : &mres;
             if (!d->to_o) {                               /* to c[] */
-                if (s_cxt_write && d->oaddr < NV2A_VSH_CONSTANTS)
+                if (s_cxt_write && d->oaddr < NV2A_VSH_CONSTANTS) {
                     write_masked(s_const[d->oaddr], src, d->omask);
+                    s_const_revision++;
+                }
             } else if (d->oaddr == 0) {
                 write_masked(regs[12].v, src, d->omask);
             } else if (d->oaddr < 13) {
@@ -800,6 +809,17 @@ uint32_t nv2a_vsh_program_revision(void)
     return r ? r : 1u;
 }
 
+uint32_t nv2a_vsh_const_revision(void)
+{
+    uint32_t r = s_const_revision + 1u;
+    return r ? r : 1u;
+}
+
+const float (*nv2a_vsh_constants_ptr(void))[4]
+{
+    return (const float (*)[4])s_const;
+}
+
 int nv2a_vsh_run(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out)
 {
     int mode = vsh_mode();
@@ -895,8 +915,10 @@ static int vsh_run_fields(const float in[NV2A_VSH_INPUTS][4], Nv2aVshOutput *out
         if (omask) {
             const vec4 *src = field(ins, 3, 2, 1) ? &ires : &mres;
             if (!field(ins, 3, 11, 1)) {                  /* to c[] */
-                if (s_cxt_write && oaddr < NV2A_VSH_CONSTANTS)
+                if (s_cxt_write && oaddr < NV2A_VSH_CONSTANTS) {
                     write_masked(s_const[oaddr], src, omask);
+                    s_const_revision++;
+                }
             } else if (oaddr == 0) {
                 write_masked(opos.v, src, omask);
             } else if (oaddr < 13) {

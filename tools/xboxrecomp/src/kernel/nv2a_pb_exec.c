@@ -1064,7 +1064,9 @@ static void clear_surface(uint32_t param)
     if (s_world_backend) {
         Nv2aWorldRegion target = {mem + s_gpu.color_base,
             (size_t)(s_gpu.clip_y + s_gpu.clip_h) * s_gpu.pitch};
-        int is_640x480 = (s_gpu.clip_w == NV2A_WORLD_WIDTH && s_gpu.clip_h == NV2A_WORLD_HEIGHT && s_gpu.pitch == NV2A_WORLD_WIDTH * 4);
+        int is_640x480 = (s_gpu.pitch == NV2A_WORLD_WIDTH * 4 &&
+                          s_gpu.clip_w > 0 && s_gpu.clip_w <= NV2A_WORLD_WIDTH &&
+                          s_gpu.clip_h > 0 && s_gpu.clip_h <= NV2A_WORLD_HEIGHT);
         int is_64x64 = (s_gpu.clip_w == 64 && s_gpu.clip_h == 64 && s_gpu.pitch == 256);
         if (!s_swz_on && bpp == 4 && !s_gpu.clip_x && !s_gpu.clip_y
             && (is_640x480 || is_64x64)
@@ -3530,7 +3532,9 @@ static int xf_try_world_backend(void)
     if (s_gpu.clip_plane_mode)
         return WORLD_PROGRAM;
 
-    int is_640x480 = (s_gpu.clip_w == NV2A_WORLD_WIDTH && s_gpu.clip_h == NV2A_WORLD_HEIGHT && s_gpu.pitch == NV2A_WORLD_WIDTH * 4);
+    int is_640x480 = (s_gpu.pitch == NV2A_WORLD_WIDTH * 4 &&
+                      s_gpu.clip_w > 0 && s_gpu.clip_w <= NV2A_WORLD_WIDTH &&
+                      s_gpu.clip_h > 0 && s_gpu.clip_h <= NV2A_WORLD_HEIGHT);
     int is_64x64 = (s_gpu.clip_w == 64 && s_gpu.clip_h == 64 && s_gpu.pitch == 256);
     if (s_xfq_tris[0].bpp != 4
         || s_swz_on || s_gpu.clip_x || s_gpu.clip_y || !s_surface
@@ -3613,7 +3617,9 @@ static int vsh_try_world_backend(void)
     if (!surface_begin_batch((const uint8_t *)xbox_GetMemoryOffset()))
         return 0;
 
-    int is_640x480 = (s_gpu.clip_w == NV2A_WORLD_WIDTH && s_gpu.clip_h == NV2A_WORLD_HEIGHT && s_gpu.pitch == NV2A_WORLD_WIDTH * 4);
+    int is_640x480 = (s_gpu.pitch == NV2A_WORLD_WIDTH * 4 &&
+                      s_gpu.clip_w > 0 && s_gpu.clip_w <= NV2A_WORLD_WIDTH &&
+                      s_gpu.clip_h > 0 && s_gpu.clip_h <= NV2A_WORLD_HEIGHT);
     int is_64x64 = (s_gpu.clip_w == 64 && s_gpu.clip_h == 64 && s_gpu.pitch == 256);
     if (surface_bpp() != 4
         || s_swz_on || s_gpu.clip_x || s_gpu.clip_y || !s_surface
@@ -3654,8 +3660,7 @@ static int vsh_try_world_backend(void)
     }
 
     static uint32_t s_gpu_ins[NV2A_VSH_SLOTS * NV2A_VSH_GPU_INST_STRIDE];
-    static float s_gpu_constants[NV2A_VSH_CONSTANTS][4];
-    uint32_t n_ins = nv2a_vsh_export_gpu(s_gpu_ins, NV2A_VSH_SLOTS, s_gpu_constants, NV2A_VSH_CONSTANTS);
+    uint32_t n_ins = nv2a_vsh_export_gpu(s_gpu_ins, NV2A_VSH_SLOTS, NULL, 0);
     if (!n_ins)
         return 0;
 
@@ -3825,7 +3830,7 @@ static int vsh_try_world_backend(void)
     Nv2aWorldDrawProgram draw = {0};
     draw.instructions = s_gpu_ins;
     draw.instruction_count = n_ins;
-    draw.constants = s_gpu_constants;
+    draw.constants = nv2a_vsh_constants_ptr();
     draw.constant_count = NV2A_VSH_CONSTANTS;
     draw.vertex_words = vertex_words;
     draw.vertex_bytes = vertex_bytes;
@@ -3836,6 +3841,7 @@ static int vsh_try_world_backend(void)
     draw.stream_mask = stream_mask;
     draw.start_slot = 0;
     draw.program_revision = nv2a_vsh_program_revision();
+    draw.const_revision = nv2a_vsh_const_revision();
     draw.aa_scale[0] = s_gpu.aa_sx;
     draw.aa_scale[1] = s_gpu.aa_sy;
     draw.fog_param[0] = s_gpu.fog_param[0];

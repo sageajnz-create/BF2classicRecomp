@@ -346,11 +346,13 @@ static void load_recomp_ini(void)
             else if (!_stricmp(k, "visibility_uav")) set_env_if_unset("RECOMP_VISIBILITY_UAV", v);
             else if (!_stricmp(k, "pipelined_query")) set_env_if_unset("RECOMP_PIPELINED_QUERY", v);
             else if (!_stricmp(k, "pb_kick_ack")) set_env_if_unset("RECOMP_PB_KICK_ACK", v);
+            else if (!_stricmp(k, "fps_limit")) set_env_if_unset("RECOMP_FPS_LIMIT", v);
+            else if (!_stricmp(k, "show_fps")) set_env_if_unset("RECOMP_SHOW_FPS", v);
             else if (!_stricmp(k, "mouse_input")) set_env_if_unset("RECOMP_MKB", v);
             else if (!_stricmp(k, "mouse_sens")) set_env_if_unset("RECOMP_MKB_SENS", v);
             else if (!_stricmp(k, "mouse_acc")) set_env_if_unset("RECOMP_MKB_ACC", v);
             else if (!_stricmp(k, "mouse_invert_y")) set_env_if_unset("RECOMP_MKB_INVERT_Y", v);
-            else if (!_stricmp(k, "deadzone")) set_env_if_unset("RECOMP_MKB_DEADZONE", v);
+            else if (!_stricmp(k, "deadzone")) { set_env_if_unset("RECOMP_MKB_DZ", v); set_env_if_unset("RECOMP_MKB_DEADZONE", v); }
             else if (!_stricmp(k, "dispatch_gate")) set_env_if_unset("RECOMP_DISPATCH_GATE", v);
             else if (!_stricmp(k, "save_dir")) set_env_if_unset("RECOMP_SAVE_DIR", v);
             else if (!_strnicmp(k, "RECOMP_", 7)) set_env_if_unset(k, v);

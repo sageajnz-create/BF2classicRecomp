@@ -12,6 +12,8 @@ static const Nv2aWorldBackend *backend;
 void nv2a_set_world_backend(const Nv2aWorldBackend *value) { backend = value; }
 HWND xbox_FramebufferWindowGetHwnd(void) { return NULL; }
 void xbox_FramebufferWindowDirectActive(int active) { (void)active; }
+int xbox_FramebufferWindowConsumeScreenshot(void) { return 0; }
+void xbox_FramebufferWindowSetTitleText(const char *title) { (void)title; }
 /* The cubemap fixture decodes linear faces from a host buffer standing in for
  * guest memory; desc.offset is relative to decode_base. */
 static const uint8_t *decode_base;

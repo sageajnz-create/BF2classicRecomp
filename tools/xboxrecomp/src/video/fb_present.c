@@ -51,6 +51,10 @@ static uint32_t      s_fb_va, s_fb_pitch, s_fb_width = 640, s_fb_height = 480;
 static uint32_t     *s_rgb;           /* converted 32-bit copy for GDI */
 static HWND          s_hwnd;
 static volatile LONG s_direct_present_active;
+static volatile LONG s_screenshot_req;
+static SRWLOCK       s_title_lock = SRWLOCK_INIT;
+static char          s_pending_title[256];
+static volatile LONG s_title_dirty;
 
 HWND xbox_FramebufferWindowGetHwnd(void)
 {
@@ -60,6 +64,22 @@ HWND xbox_FramebufferWindowGetHwnd(void)
 void xbox_FramebufferWindowDirectActive(int active)
 {
     InterlockedExchange(&s_direct_present_active, active);
+}
+
+int xbox_FramebufferWindowConsumeScreenshot(void)
+{
+    return (int)InterlockedExchange(&s_screenshot_req, 0);
+}
+
+void xbox_FramebufferWindowSetTitleText(const char *title)
+{
+    if (!title)
+        return;
+    AcquireSRWLockExclusive(&s_title_lock);
+    strncpy(s_pending_title, title, sizeof(s_pending_title) - 1);
+    s_pending_title[sizeof(s_pending_title) - 1] = '\0';
+    InterlockedExchange(&s_title_dirty, 1);
+    ReleaseSRWLockExclusive(&s_title_lock);
 }
 
 /* A finished frame, taken at the flip and shown until the next one.
@@ -315,6 +335,10 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if (m == WM_KEYDOWN && w == VK_F12 && !(l & (1L << 30))) {
+            InterlockedExchange(&s_screenshot_req, 1);
+            return 0;
+        }
         xbox_InputKeySet((int)w, 1);
         /* A Shift, Ctrl or Alt is also its side's key, for bindings to
          * "lshift" and the like; wParam stays the either-side one. */
@@ -598,6 +622,13 @@ static DWORD WINAPI fb_thread(LPVOID unused)
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
+        }
+        if (InterlockedExchange(&s_title_dirty, 0)) {
+            char title_buf[256];
+            AcquireSRWLockShared(&s_title_lock);
+            memcpy(title_buf, s_pending_title, sizeof(title_buf));
+            ReleaseSRWLockShared(&s_title_lock);
+            SetWindowTextA(hwnd, title_buf);
         }
         if (s_direct_present_active) {
             /* Direct swapchain presentation active on GPU: do not blit from CPU */
