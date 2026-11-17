@@ -298,6 +298,48 @@ static int bf2_d3d_software_method(uint32_t payload)
     return xbox_SignalTitleEvent(0x004393CCu);
 }
 
+static void load_recomp_ini(void)
+{
+    char path[MAX_PATH];
+    DWORD n = GetModuleFileNameA(NULL, path, sizeof path - 20);
+    FILE *f = NULL;
+    if (n && n < sizeof path - 20) {
+        char *slash = strrchr(path, '\\');
+        if (slash) *slash = 0;
+        strcat_s(path, sizeof path, "\\bf2_recomp.ini");
+        f = fopen(path, "r");
+    }
+    if (!f)
+        f = fopen("bf2_recomp.ini", "r");
+    if (!f)
+        return;
+
+    char line[256];
+    while (fgets(line, sizeof line, f)) {
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        char *k = line, *v = eq + 1;
+        while (*k == ' ' || *k == '\t') k++;
+        while (*v == ' ' || *v == '\t') v++;
+        k[strcspn(k, " \t\r\n")] = 0;
+        v[strcspn(v, " \t\r\n")] = 0;
+        if (*k && *v) {
+            if (!_stricmp(k, "aspect")) _putenv_s("RECOMP_ASPECT", v);
+            else if (!_stricmp(k, "anisotropy")) _putenv_s("RECOMP_ANISOTROPY", v);
+            else if (!_stricmp(k, "cas")) _putenv_s("RECOMP_CAS", v);
+            else if (!_stricmp(k, "vsync")) _putenv_s("RECOMP_PRESENT_VSYNC", v);
+            else if (!_stricmp(k, "mouse_input")) _putenv_s("RECOMP_MKB", v);
+            else if (!_stricmp(k, "mouse_sens")) _putenv_s("RECOMP_MKB_SENS", v);
+            else if (!_stricmp(k, "mouse_acc")) _putenv_s("RECOMP_MKB_ACC", v);
+            else if (!_stricmp(k, "mouse_invert_y")) _putenv_s("RECOMP_MKB_INVERT_Y", v);
+            else if (!_stricmp(k, "save_dir")) _putenv_s("RECOMP_SAVE_DIR", v);
+            else if (!_strnicmp(k, "RECOMP_", 7)) _putenv_s(k, v);
+        }
+    }
+    fclose(f);
+}
+
 /* ── WinMain ───────────────────────────────────────────────── */
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
@@ -326,6 +368,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_TITLE_KEVENTS")) _putenv_s("RECOMP_TITLE_KEVENTS", "1");
     /* Shell and mission teardown release textures and render targets for reuse. */
     if (!getenv("RECOMP_HEAP_RECLAIM")) _putenv_s("RECOMP_HEAP_RECLAIM", "1");
+
+    /* Modern AAA Defaults: high performance GPU backend, synchronized audio, PC FPS controls */
+    if (!getenv("RECOMP_D3D11_WORLD")) _putenv_s("RECOMP_D3D11_WORLD", "snapshot");
+    if (!getenv("RECOMP_D3D11_RESOLVE")) _putenv_s("RECOMP_D3D11_RESOLVE", "snapshot");
+    if (!getenv("RECOMP_DISPATCH_GATE")) _putenv_s("RECOMP_DISPATCH_GATE", "1");
+    if (!getenv("RECOMP_MKB")) _putenv_s("RECOMP_MKB", "1");
+    if (!getenv("RECOMP_ASPECT")) _putenv_s("RECOMP_ASPECT", "16:9");
+    if (!getenv("RECOMP_ANISOTROPY")) _putenv_s("RECOMP_ANISOTROPY", "16");
+    if (!getenv("RECOMP_CAS")) _putenv_s("RECOMP_CAS", "1");
+    load_recomp_ini();
     nv2a_pb_set_software_method_handler(bf2_d3d_software_method);
     bf2_register_gpu_resolve();
     bf2_register_gpu_world();
@@ -407,11 +459,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     printf("Initializing Xbox kernel replacement...\n");
     xbox_kernel_init();
 
-    /* Step 4: Set game directory for file I/O path translation */
+    /* Step 4: Set game directory for file I/O path translation and persistent saves */
     {
         extern void xbox_path_init(const char *game_dir, const char *save_dir);
         printf("Using game directory: '%s'\n", found_dir);
-        xbox_path_init(found_dir, NULL);
+        const char *save_env = getenv("RECOMP_SAVE_DIR");
+        char default_save_dir[MAX_PATH];
+        if (!save_env || !*save_env) {
+            snprintf(default_save_dir, sizeof default_save_dir, "%s\\saves", found_dir);
+            CreateDirectoryA(default_save_dir, NULL);
+            save_env = default_save_dir;
+        }
+        printf("Using save directory: '%s'\n", save_env);
+        xbox_path_init(found_dir, save_env);
     }
 
     /* Step 5: Initialize kernel bridge (thunk table in Xbox memory) */

@@ -119,11 +119,13 @@ float4 sample_stage(uint stage, float4 tc)
     if (scale.z == 0.0)
         return 1.0;
     float2 uv = tc.xy * scale.xy / (tc.w != 0.0 ? tc.w : 1.0);
+    float2 duv_dx = ddx(uv);
+    float2 duv_dy = ddy(uv);
     switch (stage) {
-        case 0: return tex0.SampleLevel(samp0, uv, 0.0);
-        case 1: return tex1.SampleLevel(samp1, uv, 0.0);
-        case 2: return tex2.SampleLevel(samp2, uv, 0.0);
-        default: return tex3.SampleLevel(samp3, uv, 0.0);
+        case 0: return tex0.SampleGrad(samp0, uv, duv_dx, duv_dy);
+        case 1: return tex1.SampleGrad(samp1, uv, duv_dx, duv_dy);
+        case 2: return tex2.SampleGrad(samp2, uv, duv_dx, duv_dy);
+        default: return tex3.SampleGrad(samp3, uv, duv_dx, duv_dy);
     }
 }
 

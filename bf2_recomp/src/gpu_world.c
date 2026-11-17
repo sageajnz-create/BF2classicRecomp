@@ -1180,12 +1180,24 @@ static ID3D11SamplerState *sampler_for(const Nv2aWorldTexture *t)
     if (entry->sampler)
         ID3D11SamplerState_Release(entry->sampler);
     *entry = (SamplerEntry){u, v, border, t->bilinear, NULL};
+    static int s_aniso = -1;
+    if (s_aniso < 0) {
+        const char *a = getenv("RECOMP_ANISOTROPY");
+        s_aniso = (a && *a) ? atoi(a) : 16;
+        if (s_aniso < 1) s_aniso = 1;
+        if (s_aniso > 16) s_aniso = 16;
+    }
     desc.AddressU = u;
     desc.AddressV = v;
     desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    desc.Filter = t->bilinear ? D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT : D3D11_FILTER_MIN_MAG_MIP_POINT;
+    if (t->bilinear) {
+        desc.Filter = s_aniso > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+        desc.MaxAnisotropy = s_aniso > 1 ? s_aniso : 1;
+    } else {
+        desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        desc.MaxAnisotropy = 1;
+    }
     desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    desc.MaxAnisotropy = 1;
     nv2a_rc_unpack(border, desc.BorderColor);
     if (!check_gpu(ID3D11Device_CreateSamplerState(world.device, &desc, &entry->sampler), "sampler"))
         return NULL;
@@ -2963,7 +2975,9 @@ static int init_swapchain(HWND hwnd)
         return 0;
 
     if (!world.present_vs) {
-        static const char hlsl[] =
+        const char *cas_env = getenv("RECOMP_CAS");
+        int use_cas = (cas_env && *cas_env) ? (cas_env[0] != '0') : 1;
+        static const char hlsl_linear[] =
             "Texture2D t : register(t0); SamplerState s : register(s0);\n"
             "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
             "V vs(uint i : SV_VertexID) {\n"
@@ -2976,9 +2990,39 @@ static int init_swapchain(HWND hwnd)
             "float4 ps(V i) : SV_Target {\n"
             "    return float4(t.Sample(s, i.uv).rgb, 1);\n"
             "}\n";
+        static const char hlsl_cas[] =
+            "Texture2D t : register(t0); SamplerState s : register(s0);\n"
+            "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
+            "V vs(uint i : SV_VertexID) {\n"
+            "    V o;\n"
+            "    float2 q = float2((i << 1) & 2, i & 2);\n"
+            "    o.uv = q;\n"
+            "    o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+            "    return o;\n"
+            "}\n"
+            "float4 ps(V i) : SV_Target {\n"
+            "    float w, h;\n"
+            "    t.GetDimensions(w, h);\n"
+            "    float2 step = 1.0 / float2(w, h);\n"
+            "    float2 dx = float2(step.x, 0.0);\n"
+            "    float2 dy = float2(0.0, step.y);\n"
+            "    float3 a = t.Sample(s, i.uv - dy).rgb;\n"
+            "    float3 b = t.Sample(s, i.uv - dx).rgb;\n"
+            "    float3 e = t.Sample(s, i.uv).rgb;\n"
+            "    float3 d = t.Sample(s, i.uv + dx).rgb;\n"
+            "    float3 c = t.Sample(s, i.uv + dy).rgb;\n"
+            "    float3 mn = min(min(min(a, b), min(c, d)), e);\n"
+            "    float3 mx = max(max(max(a, b), max(c, d)), e);\n"
+            "    float3 amp = saturate(min(mn, 2.0 - mx) / max(mx, 0.001));\n"
+            "    float3 wgt = amp * -0.125;\n"
+            "    float3 col = (e + (a + b + c + d) * wgt) / (1.0 + 4.0 * wgt);\n"
+            "    return float4(saturate(col), 1.0);\n"
+            "}\n";
+        const char *hlsl = use_cas ? hlsl_cas : hlsl_linear;
+        size_t hlsl_len = use_cas ? sizeof(hlsl_cas) - 1 : sizeof(hlsl_linear) - 1;
         ID3DBlob *vsb = NULL, *psb = NULL;
-        D3DCompile(hlsl, sizeof hlsl - 1, "present_vs", NULL, NULL, "vs", "vs_5_0", 0, 0, &vsb, NULL);
-        D3DCompile(hlsl, sizeof hlsl - 1, "present_ps", NULL, NULL, "ps", "ps_5_0", 0, 0, &psb, NULL);
+        D3DCompile(hlsl, hlsl_len, "present_vs", NULL, NULL, "vs", "vs_5_0", 0, 0, &vsb, NULL);
+        D3DCompile(hlsl, hlsl_len, "present_ps", NULL, NULL, "ps", "ps_5_0", 0, 0, &psb, NULL);
         if (vsb && psb) {
             ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(vsb),
                                             ID3D10Blob_GetBufferSize(vsb), NULL, &world.present_vs);
