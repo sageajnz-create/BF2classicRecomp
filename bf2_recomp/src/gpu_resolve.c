@@ -272,6 +272,6 @@ static int draw_resolve(const Nv2aResolveDraw *draw)
 void bf2_register_gpu_resolve(void)
 {
     const char *mode = getenv("RECOMP_D3D11_RESOLVE");
-    if (mode && strcmp(mode, "snapshot") == 0)
+    if ((!mode || (strcmp(mode, "0") != 0 && strcmp(mode, "cpu") != 0)) && !getenv("RECOMP_CAPTURE_RESOLVE"))
         nv2a_set_resolve_backend(draw_resolve);
 }

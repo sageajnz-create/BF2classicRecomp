@@ -3207,6 +3207,6 @@ void bf2_register_gpu_world(void)
         .present = present_world,
     };
     const char *mode = getenv("RECOMP_D3D11_WORLD");
-    if (mode && !strcmp(mode, "snapshot") && !getenv("RECOMP_CAPTURE_RESOLVE"))
+    if ((!mode || (strcmp(mode, "0") != 0 && strcmp(mode, "cpu") != 0)) && !getenv("RECOMP_CAPTURE_RESOLVE"))
         nv2a_set_world_backend(&backend);
 }

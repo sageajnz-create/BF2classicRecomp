@@ -99,3 +99,14 @@ if(MSVC)
     )
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj /MP)
 endif()
+
+# Automatically deploy latest executable and config to game_files
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:${PROJECT_NAME}>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini"
+        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
+    COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
+)
