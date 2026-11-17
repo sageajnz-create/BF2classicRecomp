@@ -1608,7 +1608,7 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                     static int s_defer_segment_flush = -1;
                     if (s_defer_segment_flush < 0) {
                         const char *e = getenv("RECOMP_DEFER_SEGMENT_QUERY_FLUSH");
-                        s_defer_segment_flush = (e && *e && *e != '0') ? 1 : 0;
+                        s_defer_segment_flush = (!e || (strcmp(e, "0") != 0)) ? 1 : 0;
                     }
                     if (!s_defer_segment_flush) {
                         extern void nv2a_flush_world_visibility_reports(int src);

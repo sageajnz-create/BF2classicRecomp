@@ -268,7 +268,7 @@ static int visibility_uav_enabled(void)
     static int s_enabled = -1;
     if (s_enabled < 0) {
         const char *e = getenv("RECOMP_VISIBILITY_UAV");
-        s_enabled = (e && *e && *e != '0') ? 1 : 0;
+        s_enabled = (!e || (strcmp(e, "0") != 0 && strcmp(e, "cpu") != 0)) ? 1 : 0;
     }
     return s_enabled;
 }
@@ -1616,7 +1616,7 @@ static void flush_visibility_reports(int src)
     static int s_pipelined_query = -1;
     if (s_pipelined_query < 0) {
         const char *e = getenv("RECOMP_PIPELINED_QUERY");
-        s_pipelined_query = (e && *e && *e != '0') ? 1 : 0;
+        s_pipelined_query = (!e || (strcmp(e, "0") != 0 && strcmp(e, "cpu") != 0)) ? 1 : 0;
     }
     if (s_pipelined_query && src == NV2A_FLUSH_SRC_OTHER) {
         s_flush_src.other++;

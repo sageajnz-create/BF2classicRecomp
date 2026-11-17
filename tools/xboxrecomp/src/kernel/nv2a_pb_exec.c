@@ -835,7 +835,7 @@ void nv2a_pb_publish_guest_results(void)
     static int s_defer_sem_flush = -1;
     if (s_defer_sem_flush < 0) {
         const char *e = getenv("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH");
-        s_defer_sem_flush = (e && *e && *e != '0') ? 1 : 0;
+        s_defer_sem_flush = (!e || (strcmp(e, "0") != 0)) ? 1 : 0;
     }
     if (!s_defer_sem_flush)
         nv2a_flush_world_visibility_reports(NV2A_FLUSH_SRC_SEMAPHORE);
@@ -3603,7 +3603,7 @@ static int vsh_try_world_backend(void)
     static int s_gpu_vsh = -1;
     if (s_gpu_vsh < 0) {
         const char *e = getenv("RECOMP_GPU_VSH");
-        s_gpu_vsh = (e && *e && *e != '0') ? 1 : 0;
+        s_gpu_vsh = (!e || (strcmp(e, "0") != 0 && strcmp(e, "cpu") != 0)) ? 1 : 0;
     }
     if (!s_gpu_vsh || !s_world_backend || !s_world_backend->draw_program)
         return 0;
@@ -5863,7 +5863,7 @@ static void method_body(uint32_t subch, uint32_t method, uint32_t param)
             static int s_defer_sem_flush = -1;
             if (s_defer_sem_flush < 0) {
                 const char *e = getenv("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH");
-                s_defer_sem_flush = (e && *e && *e != '0') ? 1 : 0;
+                s_defer_sem_flush = (!e || (strcmp(e, "0") != 0)) ? 1 : 0;
             }
             if (s_defer_sem_flush)
                 nv2a_flush_world_visibility_reports(NV2A_FLUSH_SRC_OTHER);

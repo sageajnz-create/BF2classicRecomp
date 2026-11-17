@@ -329,6 +329,9 @@ static void load_recomp_ini(void)
             else if (!_stricmp(k, "anisotropy")) _putenv_s("RECOMP_ANISOTROPY", v);
             else if (!_stricmp(k, "cas")) _putenv_s("RECOMP_CAS", v);
             else if (!_stricmp(k, "vsync")) _putenv_s("RECOMP_PRESENT_VSYNC", v);
+            else if (!_stricmp(k, "gpu_vsh")) _putenv_s("RECOMP_GPU_VSH", v);
+            else if (!_stricmp(k, "visibility_uav")) _putenv_s("RECOMP_VISIBILITY_UAV", v);
+            else if (!_stricmp(k, "pipelined_query")) _putenv_s("RECOMP_PIPELINED_QUERY", v);
             else if (!_stricmp(k, "mouse_input")) _putenv_s("RECOMP_MKB", v);
             else if (!_stricmp(k, "mouse_sens")) _putenv_s("RECOMP_MKB_SENS", v);
             else if (!_stricmp(k, "mouse_acc")) _putenv_s("RECOMP_MKB_ACC", v);
@@ -372,6 +375,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     /* Modern AAA Defaults: high performance GPU backend, synchronized audio, PC FPS controls */
     if (!getenv("RECOMP_D3D11_WORLD")) _putenv_s("RECOMP_D3D11_WORLD", "snapshot");
     if (!getenv("RECOMP_D3D11_RESOLVE")) _putenv_s("RECOMP_D3D11_RESOLVE", "snapshot");
+    if (!getenv("RECOMP_GPU_VSH")) _putenv_s("RECOMP_GPU_VSH", "1");
+    if (!getenv("RECOMP_VISIBILITY_UAV")) _putenv_s("RECOMP_VISIBILITY_UAV", "1");
+    if (!getenv("RECOMP_PIPELINED_QUERY")) _putenv_s("RECOMP_PIPELINED_QUERY", "1");
+    if (!getenv("RECOMP_DEFER_SEGMENT_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEGMENT_QUERY_FLUSH", "1");
+    if (!getenv("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH", "1");
     if (!getenv("RECOMP_DISPATCH_GATE")) _putenv_s("RECOMP_DISPATCH_GATE", "1");
     if (!getenv("RECOMP_MKB")) _putenv_s("RECOMP_MKB", "1");
     if (!getenv("RECOMP_ASPECT")) _putenv_s("RECOMP_ASPECT", "16:9");
