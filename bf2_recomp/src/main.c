@@ -335,12 +335,17 @@ static void load_recomp_ini(void)
         v[strcspn(v, " \t\r\n")] = 0;
         if (*k && *v) {
             if (!_stricmp(k, "aspect")) set_env_if_unset("RECOMP_ASPECT", v);
+            else if (!_stricmp(k, "res_scale")) set_env_if_unset("RECOMP_RES_SCALE", v);
+            else if (!_stricmp(k, "window_scale")) set_env_if_unset("RECOMP_WINDOW_SCALE", v);
+            else if (!_stricmp(k, "fullscreen")) set_env_if_unset("RECOMP_FULLSCREEN", v);
             else if (!_stricmp(k, "anisotropy")) set_env_if_unset("RECOMP_ANISOTROPY", v);
             else if (!_stricmp(k, "cas")) set_env_if_unset("RECOMP_CAS", v);
             else if (!_stricmp(k, "vsync")) set_env_if_unset("RECOMP_PRESENT_VSYNC", v);
             else if (!_stricmp(k, "gpu_vsh")) set_env_if_unset("RECOMP_GPU_VSH", v);
+            else if (!_stricmp(k, "shader_cache")) set_env_if_unset("RECOMP_SHADER_CACHE", v);
             else if (!_stricmp(k, "visibility_uav")) set_env_if_unset("RECOMP_VISIBILITY_UAV", v);
             else if (!_stricmp(k, "pipelined_query")) set_env_if_unset("RECOMP_PIPELINED_QUERY", v);
+            else if (!_stricmp(k, "pb_kick_ack")) set_env_if_unset("RECOMP_PB_KICK_ACK", v);
             else if (!_stricmp(k, "mouse_input")) set_env_if_unset("RECOMP_MKB", v);
             else if (!_stricmp(k, "mouse_sens")) set_env_if_unset("RECOMP_MKB_SENS", v);
             else if (!_stricmp(k, "mouse_acc")) set_env_if_unset("RECOMP_MKB_ACC", v);
@@ -366,6 +371,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     (void)hPrevInstance;
     (void)lpCmdLine;
     (void)nCmdShow;
+
+    /* Enable Per-Monitor-V2 DPI awareness so Windows scaling never blurs D3D11 output */
+    {
+        HMODULE u32 = GetModuleHandleA("user32.dll");
+        if (u32) {
+            typedef BOOL (WINAPI *SetDpiCtxFn)(HANDLE);
+            SetDpiCtxFn fn = (SetDpiCtxFn)GetProcAddress(u32, "SetProcessDpiAwarenessContext");
+            if (fn)
+                fn((HANDLE)(intptr_t)-4); /* DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 */
+        }
+    }
 
     /* Unbuffered output for immediate visibility during debugging */
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -398,6 +414,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_DISPATCH_GATE")) _putenv_s("RECOMP_DISPATCH_GATE", "1");
     if (!getenv("RECOMP_MKB")) _putenv_s("RECOMP_MKB", "1");
     if (!getenv("RECOMP_ASPECT")) _putenv_s("RECOMP_ASPECT", "16:9");
+    if (!getenv("RECOMP_RES_SCALE")) _putenv_s("RECOMP_RES_SCALE", "2");
+    if (!getenv("RECOMP_SHADER_CACHE")) _putenv_s("RECOMP_SHADER_CACHE", "1");
+    if (!getenv("RECOMP_WINDOW_TITLE")) _putenv_s("RECOMP_WINDOW_TITLE", "Star Wars: Battlefront II - Native PC Recomp");
     if (!getenv("RECOMP_ANISOTROPY")) _putenv_s("RECOMP_ANISOTROPY", "16");
     if (!getenv("RECOMP_CAS")) _putenv_s("RECOMP_CAS", "1");
     nv2a_pb_set_software_method_handler(bf2_d3d_software_method);

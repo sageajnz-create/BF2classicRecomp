@@ -527,22 +527,36 @@ static DWORD WINAPI fb_thread(LPVOID unused)
          * client area is the frame times this, made smaller until the window
          * fits the desktop work area, and centred on it. */
         const char *e = getenv("RECOMP_WINDOW_SCALE");
+        const char *aspect_env = getenv("RECOMP_ASPECT");
+        const char *title_env = getenv("RECOMP_WINDOW_TITLE");
         int scale = e ? atoi(e) : 2;
+        double aspect = 0.0;
         RECT work;
         if (scale < 1 || scale > 8)
             scale = 2;
+        if (aspect_env && *aspect_env) {
+            if (!strcmp(aspect_env, "16:9") || !strcmp(aspect_env, "widescreen") || !strcmp(aspect_env, "16/9"))
+                aspect = 16.0 / 9.0;
+            else if (!strcmp(aspect_env, "16:10") || !strcmp(aspect_env, "16/10"))
+                aspect = 16.0 / 10.0;
+            else if (!strcmp(aspect_env, "4:3") || !strcmp(aspect_env, "4/3"))
+                aspect = 4.0 / 3.0;
+        }
         if (!SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0)) {
             work.left = work.top = 0; work.right = 1920; work.bottom = 1080;
         }
         for (;; scale--) {
+            LONG cw = (LONG)s_fb_width * scale;
+            LONG ch = aspect > 0.0 ? (LONG)(cw / aspect + 0.5) : (LONG)s_fb_height * scale;
             r.left = 0; r.top = 0;
-            r.right = (LONG)s_fb_width * scale; r.bottom = (LONG)s_fb_height * scale;
+            r.right = cw; r.bottom = ch;
             AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
             if (scale <= 1 || (r.right - r.left <= work.right - work.left
                                && r.bottom - r.top <= work.bottom - work.top))
                 break;
         }
-        hwnd = CreateWindowExA(0, "XboxRecompFramebuffer", "Xbox Recomp - Framebuffer",
+        hwnd = CreateWindowExA(0, "XboxRecompFramebuffer",
+                               (title_env && *title_env) ? title_env : "Xbox Recomp - Framebuffer",
                                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                work.left + ((work.right - work.left) - (r.right - r.left)) / 2,
                                work.top + ((work.bottom - work.top) - (r.bottom - r.top)) / 2,

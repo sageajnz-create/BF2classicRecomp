@@ -28,6 +28,7 @@ typedef struct {
     ID3D11ShaderResourceView *view;
     uint32_t *host;
     uint32_t width, height, pitch;
+    uint32_t tex_w, tex_h;
     int dirty;
     uint32_t rgb_draws;
 } ColorSurface;
@@ -38,6 +39,7 @@ typedef struct {
     float *host;
     uint8_t *stencil;
     uint32_t width, height, stride;
+    uint32_t tex_w, tex_h;
     int dirty;
 } DepthSurface;
 
@@ -153,6 +155,16 @@ static struct {
     ID3D11Texture2D *color_readback_64, *depth_readback_64;
     ID3D11Texture2D *depth_upload, *depth_upload_64;
     ID3D11ShaderResourceView *snapshot_view;
+    uint32_t snapshot_w, snapshot_h;
+    /* HD internal resolution scaling (RECOMP_RES_SCALE=2..4) blit/resolve helpers */
+    ID3D11VertexShader *blit_vs;
+    ID3D11PixelShader *blit_ps;
+    ID3D11SamplerState *blit_linear_samp, *blit_point_samp;
+    ID3D11Texture2D *color_upload, *color_resolve;
+    ID3D11ShaderResourceView *color_upload_srv;
+    ID3D11RenderTargetView *color_resolve_rtv;
+    ID3D11Texture2D *depth_upload_hd, *depth_readback_hd;
+    uint32_t depth_hd_w, depth_hd_h;
     TextureEntry textures[TEXTURE_SLOTS];
     SamplerEntry samplers[SAMPLER_SLOTS];
     BlendEntry blends[BLEND_SLOTS];
@@ -206,6 +218,37 @@ static void end_visibility_span(void);
  * of occlusion queries (~0.3 ms of real GPU time each on this driver). */
 static void resolve_visibility_uav_sync(void);
 static int queue_visibility_uav_frame(unsigned *out_staging_idx);
+
+static uint32_t world_res_scale(void)
+{
+    static int s_scale = -1;
+    if (s_scale < 0) {
+        const char *e = getenv("RECOMP_RES_SCALE");
+        int v = (e && *e) ? atoi(e) : 1;
+        if (v < 1) v = 1;
+        if (v > 4) v = 4;
+        s_scale = v;
+        if (v > 1)
+            fprintf(stderr, "[D3D11-WORLD] Native HD internal resolution scale: %dx (%ux%u)\n",
+                    v, WIDTH * (unsigned)v, HEIGHT * (unsigned)v);
+    }
+    return (uint32_t)s_scale;
+}
+
+static uint32_t surface_scale(uint32_t width, uint32_t height)
+{
+    return (width == WIDTH && height == HEIGHT) ? world_res_scale() : 1u;
+}
+
+static uint32_t normalize_vis_pixels(uint32_t pixels)
+{
+    uint32_t s = world_res_scale();
+    if (s <= 1 || !pixels)
+        return pixels;
+    uint32_t div = s * s;
+    uint32_t out = (pixels + div / 2) / div;
+    return out ? out : 1u;
+}
 
 static int64_t world_ticks(void)
 {
@@ -595,12 +638,97 @@ static void bind_targets(ColorSurface *color, ID3D11DepthStencilView *depth)
         world.bound_depth = depth;
         world.uav_bound = 0;
         if (color) {
-            uint32_t w = color->width ? color->width : WIDTH;
-            uint32_t h = color->height ? color->height : HEIGHT;
+            uint32_t w = color->tex_w ? color->tex_w : (color->width ? color->width : WIDTH);
+            uint32_t h = color->tex_h ? color->tex_h : (color->height ? color->height : HEIGHT);
             D3D11_VIEWPORT vp = {0.0f, 0.0f, (float)w, (float)h, 0.0f, 1.0f};
             ID3D11DeviceContext_RSSetViewports(world.context, 1, &vp);
         }
     }
+}
+
+static int ensure_hd_blit_helpers(void)
+{
+    if (world.blit_vs && world.blit_ps)
+        return 1;
+    static const char hlsl[] =
+        "Texture2D t_col : register(t0);\n"
+        "SamplerState s0 : register(s0);\n"
+        "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
+        "V blit_vs(uint i : SV_VertexID) {\n"
+        "    V o; float2 q = float2((i << 1) & 2, i & 2);\n"
+        "    o.uv = q; o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1);\n"
+        "    return o;\n"
+        "}\n"
+        "float4 blit_ps(V i) : SV_Target { return t_col.Sample(s0, i.uv); }\n";
+    ID3DBlob *vsb = compile_source(hlsl, sizeof(hlsl) - 1, "blit_vs", "vs_5_0");
+    ID3DBlob *psb = compile_source(hlsl, sizeof(hlsl) - 1, "blit_ps", "ps_5_0");
+    if (!vsb || !psb) {
+        if (vsb) ID3D10Blob_Release(vsb);
+        if (psb) ID3D10Blob_Release(psb);
+        return 0;
+    }
+    int ok = check_gpu(ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(vsb),
+                                                       ID3D10Blob_GetBufferSize(vsb), NULL, &world.blit_vs), "hd blit vs") &&
+             check_gpu(ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(psb),
+                                                      ID3D10Blob_GetBufferSize(psb), NULL, &world.blit_ps), "hd blit ps");
+    ID3D10Blob_Release(vsb);
+    ID3D10Blob_Release(psb);
+    if (!ok)
+        return 0;
+
+    D3D11_SAMPLER_DESC smp = {0};
+    smp.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    smp.AddressU = smp.AddressV = smp.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    smp.MaxLOD = D3D11_FLOAT32_MAX;
+    if (!check_gpu(ID3D11Device_CreateSamplerState(world.device, &smp, &world.blit_linear_samp), "hd linear samp"))
+        return 0;
+    smp.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    if (!check_gpu(ID3D11Device_CreateSamplerState(world.device, &smp, &world.blit_point_samp), "hd point samp"))
+        return 0;
+
+    if (!create_surface_texture_sized(DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE,
+                                      WIDTH, HEIGHT, &world.color_upload) ||
+        !check_gpu(ID3D11Device_CreateShaderResourceView(world.device, (ID3D11Resource *)world.color_upload,
+                                                         NULL, &world.color_upload_srv), "hd color upload srv") ||
+        !create_surface_texture_sized(DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET,
+                                      WIDTH, HEIGHT, &world.color_resolve) ||
+        !check_gpu(ID3D11Device_CreateRenderTargetView(world.device, (ID3D11Resource *)world.color_resolve,
+                                                       NULL, &world.color_resolve_rtv), "hd color resolve rtv"))
+        return 0;
+    return 1;
+}
+
+static void hd_blit_reset_state(void)
+{
+    unbind_surfaces();
+    world.bound_vs = NULL;
+    world.bound_ps = NULL;
+    world.bound_layout = (ID3D11InputLayout *)(uintptr_t)-1;
+    world.bound_blend = NULL;
+    world.bound_depth_state = NULL;
+    world.bound_stencil_ref = 0;
+}
+
+static void hd_blit_color(ID3D11ShaderResourceView *src, ID3D11RenderTargetView *dst,
+                          uint32_t dst_w, uint32_t dst_h, int linear)
+{
+    D3D11_VIEWPORT vp = {0.0f, 0.0f, (float)dst_w, (float)dst_h, 0.0f, 1.0f};
+    ID3D11SamplerState *samp = linear ? world.blit_linear_samp : world.blit_point_samp;
+    end_visibility_span();
+    unbind_surfaces();
+    ID3D11DeviceContext_OMSetRenderTargets(world.context, 1, &dst, NULL);
+    ID3D11DeviceContext_RSSetViewports(world.context, 1, &vp);
+    ID3D11DeviceContext_IASetInputLayout(world.context, NULL);
+    ID3D11DeviceContext_IASetVertexBuffers(world.context, 0, 0, NULL, NULL, NULL);
+    ID3D11DeviceContext_IASetPrimitiveTopology(world.context, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ID3D11DeviceContext_VSSetShader(world.context, world.blit_vs, NULL, 0);
+    ID3D11DeviceContext_PSSetShader(world.context, world.blit_ps, NULL, 0);
+    ID3D11DeviceContext_PSSetShaderResources(world.context, 0, 1, &src);
+    ID3D11DeviceContext_PSSetSamplers(world.context, 0, 1, &samp);
+    ID3D11DeviceContext_OMSetBlendState(world.context, NULL, NULL, 0xFFFFFFFF);
+    ID3D11DeviceContext_OMSetDepthStencilState(world.context, NULL, 0);
+    ID3D11DeviceContext_Draw(world.context, 3, 0);
+    hd_blit_reset_state();
 }
 
 static struct {
@@ -682,11 +810,19 @@ static void sync_world(const Nv2aWorldRegion *regions, unsigned count, const flo
             }
             readback_tex = world.color_readback_64;
         }
-        if (s->dirty && readback_tex && copy_surface_to_cpu(s->texture, readback_tex, &map)) {
-            s_sync_stats.color_copies++;
-            for (int y = 0; y < (int)sh; y++)
-                memcpy(s->host + y * sw, (const uint8_t *)map.pData + y * map.RowPitch, sw * 4);
-            ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)readback_tex, 0);
+        if (s->dirty && readback_tex) {
+            ID3D11Texture2D *src_tex = s->texture;
+            if ((s->tex_w != sw || s->tex_h != sh) && sw == WIDTH && sh == HEIGHT &&
+                ensure_hd_blit_helpers()) {
+                hd_blit_color(s->view, world.color_resolve_rtv, WIDTH, HEIGHT, 1);
+                src_tex = world.color_resolve;
+            }
+            if (copy_surface_to_cpu(src_tex, readback_tex, &map)) {
+                s_sync_stats.color_copies++;
+                for (int y = 0; y < (int)sh; y++)
+                    memcpy(s->host + y * sw, (const uint8_t *)map.pData + y * map.RowPitch, sw * 4);
+                ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)readback_tex, 0);
+            }
         }
         s->host = NULL;
         s->dirty = 0;
@@ -709,7 +845,29 @@ static void sync_world(const Nv2aWorldRegion *regions, unsigned count, const flo
             }
             readback_tex = world.depth_readback_64;
         }
-        if (s->dirty && readback_tex && copy_surface_to_cpu(s->texture, readback_tex, &map)) {
+        if (s->dirty && (s->tex_w != sw || s->tex_h != sh) && s->tex_w && s->tex_h) {
+            uint32_t sx = s->tex_w / sw, sy = s->tex_h / sh;
+            if (!world.depth_readback_hd || world.depth_hd_w != s->tex_w || world.depth_hd_h != s->tex_h) {
+                if (world.depth_readback_hd) { ID3D11Texture2D_Release(world.depth_readback_hd); world.depth_readback_hd = NULL; }
+                create_surface_texture_sized(DXGI_FORMAT_R32G8X24_TYPELESS, 0, s->tex_w, s->tex_h, &world.depth_readback_hd);
+                world.depth_hd_w = s->tex_w;
+                world.depth_hd_h = s->tex_h;
+            }
+            if (world.depth_readback_hd && copy_surface_to_cpu(s->texture, world.depth_readback_hd, &map)) {
+                s_sync_stats.depth_copies++;
+                for (uint32_t y = 0; y < sh; y++) {
+                    const DepthPixel *src = (const DepthPixel *)((const uint8_t *)map.pData + (size_t)(y * sy) * map.RowPitch);
+                    for (uint32_t x = 0; x < sw; x++) {
+                        unsigned cell = y * s->stride + x;
+                        const DepthPixel *px = &src[x * sx];
+                        s->host[cell] = px->depth >= 1.0f ? 3.4e38f : px->depth * 33554432.0f;
+                        if (s->stencil)
+                            s->stencil[cell] = (uint8_t)px->stencil;
+                    }
+                }
+                ID3D11DeviceContext_Unmap(world.context, (ID3D11Resource *)world.depth_readback_hd, 0);
+            }
+        } else if (s->dirty && readback_tex && copy_surface_to_cpu(s->texture, readback_tex, &map)) {
             s_sync_stats.depth_copies++;
             for (int y = 0; y < (int)sh; y++) {
                 const DepthPixel *src = (const DepthPixel *)((const uint8_t *)map.pData + y * map.RowPitch);
@@ -784,7 +942,8 @@ static void dump_color_slot_named(const char *dir, const char *name, int slot, c
 {
     if (!dir || !cs || !cs->texture || !cs->width || !cs->height)
         return;
-    uint32_t w = cs->width, h = cs->height;
+    uint32_t w = cs->tex_w ? cs->tex_w : cs->width;
+    uint32_t h = cs->tex_h ? cs->tex_h : cs->height;
     D3D11_TEXTURE2D_DESC d;
     memset(&d, 0, sizeof d);
     d.Width = w;
@@ -880,24 +1039,35 @@ static ColorSurface *bind_color(uint32_t *host, uint32_t width, uint32_t height)
         free_slot = 0;
     }
     s = &world.color[free_slot];
-    if (!s->texture || s->width != width || s->height != height) {
+    uint32_t scale = surface_scale(width, height);
+    uint32_t tex_w = width * scale;
+    uint32_t tex_h = height * scale;
+    if (!s->texture || s->tex_w != tex_w || s->tex_h != tex_h) {
         if (s->view) { ID3D11ShaderResourceView_Release(s->view); s->view = NULL; }
         if (s->target) { ID3D11RenderTargetView_Release(s->target); s->target = NULL; }
         if (s->texture) { ID3D11Texture2D_Release(s->texture); s->texture = NULL; }
         if (!create_surface_texture_sized(DXGI_FORMAT_B8G8R8A8_UNORM,
                                           D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
-                                          width, height, &s->texture) ||
+                                          tex_w, tex_h, &s->texture) ||
             !check_gpu(ID3D11Device_CreateRenderTargetView(world.device, (ID3D11Resource *)s->texture,
                                                           NULL, &s->target), "render target") ||
             !check_gpu(ID3D11Device_CreateShaderResourceView(world.device, (ID3D11Resource *)s->texture,
                                                              NULL, &s->view), "surface texture"))
             return NULL;
-        s->width = width;
-        s->height = height;
-        s->pitch = width * 4;
+        s->tex_w = tex_w;
+        s->tex_h = tex_h;
     }
-    ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)s->texture,
-                                         0, NULL, host, width * 4, 0);
+    s->width = width;
+    s->height = height;
+    s->pitch = width * 4;
+    if (scale == 1) {
+        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)s->texture,
+                                             0, NULL, host, width * 4, 0);
+    } else if (ensure_hd_blit_helpers()) {
+        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.color_upload,
+                                             0, NULL, host, width * 4, 0);
+        hd_blit_color(world.color_upload_srv, s->target, tex_w, tex_h, 1);
+    }
     s->host = host;
     if (world.trace_draws) {
         const char *dir = screenshot_dir();
@@ -937,53 +1107,107 @@ static DepthSurface *bind_depth(float *host, uint8_t *stencil, uint32_t stride, 
     if (!s)
         return NULL;
     int64_t start = world_ticks();
-    if (!s->texture || s->width != width || s->height != height) {
+    uint32_t scale = surface_scale(width, height);
+    uint32_t tex_w = width * scale;
+    uint32_t tex_h = height * scale;
+    if (!s->texture || s->tex_w != tex_w || s->tex_h != tex_h) {
         if (s->view) { ID3D11DepthStencilView_Release(s->view); s->view = NULL; }
         if (s->texture) { ID3D11Texture2D_Release(s->texture); s->texture = NULL; }
         view.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
         view.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
         if (!create_surface_texture_sized(DXGI_FORMAT_R32G8X24_TYPELESS, D3D11_BIND_DEPTH_STENCIL,
-                                          width, height, &s->texture) ||
+                                          tex_w, tex_h, &s->texture) ||
             !check_gpu(ID3D11Device_CreateDepthStencilView(world.device, (ID3D11Resource *)s->texture,
                                                            &view, &s->view), "depth view"))
             return NULL;
-        s->width = width;
-        s->height = height;
+        s->tex_w = tex_w;
+        s->tex_h = tex_h;
     }
-    ID3D11Texture2D *upload_tex = NULL;
-    if (width == WIDTH && height == HEIGHT) {
-        if (!world.depth_upload) {
-            D3D11_TEXTURE2D_DESC upload;
-            ID3D11Texture2D_GetDesc(s->texture, &upload);
-            upload.BindFlags = 0;
-            if (!check_gpu(ID3D11Device_CreateTexture2D(world.device, &upload, NULL, &world.depth_upload),
-                           "depth upload"))
-                return NULL;
+    s->width = width;
+    s->height = height;
+    if (scale > 1) {
+        int all_clear = 1;
+        for (int y = 0; y < (int)height && all_clear; y++) {
+            for (int x = 0; x < (int)width; x++) {
+                const unsigned cell = y * stride + x;
+                if (host[cell] < 33554432.0f || (stencil && stencil[cell] != 0)) {
+                    all_clear = 0;
+                    break;
+                }
+            }
         }
-        upload_tex = world.depth_upload;
+        if (all_clear) {
+            ID3D11DeviceContext_ClearDepthStencilView(world.context, s->view,
+                                                      D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
+        } else {
+            if (!world.depth_upload_hd || world.depth_hd_w != tex_w || world.depth_hd_h != tex_h) {
+                if (world.depth_upload_hd) { ID3D11Texture2D_Release(world.depth_upload_hd); world.depth_upload_hd = NULL; }
+                D3D11_TEXTURE2D_DESC upload;
+                ID3D11Texture2D_GetDesc(s->texture, &upload);
+                upload.BindFlags = 0;
+                if (!check_gpu(ID3D11Device_CreateTexture2D(world.device, &upload, NULL, &world.depth_upload_hd),
+                               "depth upload hd"))
+                    return NULL;
+                world.depth_hd_w = tex_w;
+                world.depth_hd_h = tex_h;
+            }
+            DepthPixel *buf = (DepthPixel *)malloc((size_t)tex_w * tex_h * sizeof(DepthPixel));
+            if (buf) {
+                for (uint32_t y = 0; y < height; y++) {
+                    for (uint32_t x = 0; x < width; x++) {
+                        const unsigned cell = y * stride + x;
+                        float z = host[cell] * (1.0f / 33554432.0f);
+                        DepthPixel px = {z >= 1.0f ? 1.0f : z, stencil ? stencil[cell] : 0};
+                        for (uint32_t dy = 0; dy < scale; dy++) {
+                            DepthPixel *dst_row = buf + (size_t)(y * scale + dy) * tex_w + x * scale;
+                            for (uint32_t dx = 0; dx < scale; dx++)
+                                dst_row[dx] = px;
+                        }
+                    }
+                }
+                ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)world.depth_upload_hd,
+                                                      0, NULL, buf, tex_w * (UINT)sizeof(DepthPixel), 0);
+                ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)s->texture,
+                                                 (ID3D11Resource *)world.depth_upload_hd);
+                free(buf);
+            }
+        }
     } else {
-        if (!world.depth_upload_64) {
-            D3D11_TEXTURE2D_DESC upload;
-            ID3D11Texture2D_GetDesc(s->texture, &upload);
-            upload.BindFlags = 0;
-            if (!check_gpu(ID3D11Device_CreateTexture2D(world.device, &upload, NULL, &world.depth_upload_64),
-                           "depth upload 64"))
-                return NULL;
+        ID3D11Texture2D *upload_tex = NULL;
+        if (width == WIDTH && height == HEIGHT) {
+            if (!world.depth_upload) {
+                D3D11_TEXTURE2D_DESC upload;
+                ID3D11Texture2D_GetDesc(s->texture, &upload);
+                upload.BindFlags = 0;
+                if (!check_gpu(ID3D11Device_CreateTexture2D(world.device, &upload, NULL, &world.depth_upload),
+                               "depth upload"))
+                    return NULL;
+            }
+            upload_tex = world.depth_upload;
+        } else {
+            if (!world.depth_upload_64) {
+                D3D11_TEXTURE2D_DESC upload;
+                ID3D11Texture2D_GetDesc(s->texture, &upload);
+                upload.BindFlags = 0;
+                if (!check_gpu(ID3D11Device_CreateTexture2D(world.device, &upload, NULL, &world.depth_upload_64),
+                               "depth upload 64"))
+                    return NULL;
+            }
+            upload_tex = world.depth_upload_64;
         }
-        upload_tex = world.depth_upload_64;
-    }
-    for (int y = 0; y < (int)height; y++) {
-        for (int x = 0; x < (int)width; x++) {
-            const unsigned cell = y * stride + x;
-            float z = host[cell] * (1.0f / 33554432.0f);
-            world.packed_depth[y * width + x] = (DepthPixel){z >= 1.0f ? 1.0f : z,
-                                                            stencil ? stencil[cell] : 0};
+        for (int y = 0; y < (int)height; y++) {
+            for (int x = 0; x < (int)width; x++) {
+                const unsigned cell = y * stride + x;
+                float z = host[cell] * (1.0f / 33554432.0f);
+                world.packed_depth[y * width + x] = (DepthPixel){z >= 1.0f ? 1.0f : z,
+                                                                stencil ? stencil[cell] : 0};
+            }
         }
+        ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)upload_tex,
+                                             0, NULL, world.packed_depth, width * sizeof(DepthPixel), 0);
+        ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)s->texture,
+                                        (ID3D11Resource *)upload_tex);
     }
-    ID3D11DeviceContext_UpdateSubresource(world.context, (ID3D11Resource *)upload_tex,
-                                         0, NULL, world.packed_depth, width * sizeof(DepthPixel), 0);
-    ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)s->texture,
-                                    (ID3D11Resource *)upload_tex);
     s->host = host;
     s->stencil = stencil;
     s->stride = stride;
@@ -1017,13 +1241,20 @@ static ID3D11ShaderResourceView *texture_for(const Nv2aWorldTexture *t, ColorSur
                 return s->view;
             if (*snapshot)
                 return world.snapshot_view;
-            if (!world.snapshot &&
-                (!create_surface_texture_sized(DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE,
-                                               d->width, d->height, &world.snapshot) ||
-                 !check_gpu(ID3D11Device_CreateShaderResourceView(world.device,
-                              (ID3D11Resource *)world.snapshot, NULL, &world.snapshot_view),
-                            "surface feedback view")))
-                return NULL;
+            uint32_t snap_w = s->tex_w ? s->tex_w : d->width;
+            uint32_t snap_h = s->tex_h ? s->tex_h : d->height;
+            if (!world.snapshot || world.snapshot_w != snap_w || world.snapshot_h != snap_h) {
+                if (world.snapshot_view) { ID3D11ShaderResourceView_Release(world.snapshot_view); world.snapshot_view = NULL; }
+                if (world.snapshot) { ID3D11Texture2D_Release(world.snapshot); world.snapshot = NULL; }
+                if (!create_surface_texture_sized(DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE,
+                                                  snap_w, snap_h, &world.snapshot) ||
+                    !check_gpu(ID3D11Device_CreateShaderResourceView(world.device,
+                                 (ID3D11Resource *)world.snapshot, NULL, &world.snapshot_view),
+                               "surface feedback view"))
+                    return NULL;
+                world.snapshot_w = snap_w;
+                world.snapshot_h = snap_h;
+            }
             unbind_surfaces();
             ID3D11DeviceContext_CopyResource(world.context, (ID3D11Resource *)world.snapshot,
                                              (ID3D11Resource *)s->texture);
@@ -1707,7 +1938,7 @@ static void flush_visibility_reports(int src)
                 } else if (event->kind == VISIBILITY_VALUE) {
                     q_pixels += event->value;
                 } else if (event->kind == VISIBILITY_UAV_SAMPLES) {
-                    q_pixels += world.vis_counts[event->slot];
+                    q_pixels += normalize_vis_pixels(world.vis_counts[event->slot]);
                 } else if (event->kind == VISIBILITY_REPORT) {
                     uint32_t pixels = q_pixels + event->cpu_pixels;
                     memcpy(event->destination, &event->stamp, 8);
@@ -1716,7 +1947,7 @@ static void flush_visibility_reports(int src)
                 } else if (!world.failed) {
                     UINT64 pixels = 0;
                     read_query_pixels(event->query, &pixels);
-                    q_pixels += (uint32_t)pixels;
+                    q_pixels += normalize_vis_pixels((uint32_t)pixels);
                 }
             }
             s_pending.event_count = 0;
@@ -1814,7 +2045,7 @@ static void flush_visibility_reports(int src)
         } else if (event->kind == VISIBILITY_VALUE) {
             world.query_pixels += event->value;
         } else if (event->kind == VISIBILITY_UAV_SAMPLES) {
-            world.query_pixels += world.vis_counts[event->slot];
+            world.query_pixels += normalize_vis_pixels(world.vis_counts[event->slot]);
         } else if (event->kind == VISIBILITY_REPORT) {
             uint32_t pixels = world.query_pixels + event->cpu_pixels;
             memcpy(event->destination, &event->stamp, 8);
@@ -1834,7 +2065,7 @@ static void flush_visibility_reports(int src)
                 }
             }
             if (check_gpu(hr == S_FALSE ? DXGI_ERROR_DEVICE_HUNG : hr, "visibility readback"))
-                world.query_pixels += (uint32_t)pixels;
+                world.query_pixels += normalize_vis_pixels((uint32_t)pixels);
         }
     }
     world.event_count = 0;
@@ -1948,7 +2179,7 @@ static void resolve_visibility_uav_sync(void)
         VisibilityEvent *e = &world.visibility[i];
         if (e->kind == VISIBILITY_UAV_SAMPLES) {
             e->kind = VISIBILITY_VALUE;
-            e->value = world.vis_counts[e->slot];
+            e->value = normalize_vis_pixels(world.vis_counts[e->slot]);
         }
     }
     world.vis_next = 0;
@@ -3361,7 +3592,8 @@ static int present_world(const void *target, uint32_t pitch)
 
     /* Restore pipeline state for subsequent world rendering */
     unbind_surfaces();
-    D3D11_VIEWPORT default_vp = {0, 0, WIDTH, HEIGHT, 0, 1};
+    uint32_t rs = world_res_scale();
+    D3D11_VIEWPORT default_vp = {0, 0, (float)(WIDTH * rs), (float)(HEIGHT * rs), 0, 1};
     ID3D11DeviceContext_RSSetViewports(world.context, 1, &default_vp);
     ID3D11DeviceContext_RSSetState(world.context, world.rasterizer);
     world.bound_vs = NULL;

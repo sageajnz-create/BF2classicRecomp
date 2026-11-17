@@ -342,10 +342,17 @@ static const char *vsh_out_reg_name(uint32_t oaddr)
     }
 }
 
+static void shader_cache_ensure_loaded(ID3D11Device *device);
+static void shader_cache_save_vsh(uint64_t hash, uint32_t ins_count, uint32_t stream_mask,
+                                  const uint32_t *ins, const void *dxbc, uint32_t dxbc_bytes);
+static void shader_cache_save_ps(uint64_t hash, const void *key, uint32_t key_bytes,
+                                 const void *dxbc, uint32_t dxbc_bytes);
+
 static ID3D11VertexShader *compile_vsh_jit(ID3D11Device *device,
                                            const uint32_t *instructions,
                                            uint32_t ins_count,
-                                           uint32_t stream_mask)
+                                           uint32_t stream_mask,
+                                           uint64_t hash)
 {
     uint32_t count = ins_count < VSH_MAX_INS ? ins_count : VSH_MAX_INS;
     uint32_t used_inputs = 0;
@@ -522,12 +529,14 @@ static ID3D11VertexShader *compile_vsh_jit(ID3D11Device *device,
             ID3D10Blob_Release(errors);
         }
         if (SUCCEEDED(hr) && code) {
-            hr = ID3D11Device_CreateVertexShader(device,
-                ID3D10Blob_GetBufferPointer(code),
-                ID3D10Blob_GetBufferSize(code), NULL, &vs);
+            const void *bytes = ID3D10Blob_GetBufferPointer(code);
+            size_t bsize = ID3D10Blob_GetBufferSize(code);
+            hr = ID3D11Device_CreateVertexShader(device, bytes, bsize, NULL, &vs);
             if (FAILED(hr)) {
                 fprintf(stderr, "[VSH-JIT] CreateVertexShader failed (0x%08lX)\n", (unsigned long)hr);
                 vs = NULL;
+            } else if (bsize <= 4u * 1024u * 1024u) {
+                shader_cache_save_vsh(hash, count, stream_mask, instructions, bytes, (uint32_t)bsize);
             }
             ID3D10Blob_Release(code);
         }
@@ -553,6 +562,8 @@ ID3D11VertexShader *gpu_jit_get_vsh(ID3D11Device *device,
 {
     if (!device || !instructions || !env_enabled_default_on("RECOMP_VSH_JIT", &s_vsh_jit_enabled))
         return NULL;
+
+    shader_cache_ensure_loaded(device);
 
     uint32_t count = instruction_count < VSH_MAX_INS ? instruction_count : VSH_MAX_INS;
     uint32_t mask16 = stream_mask & 0xFFFFu;
@@ -589,7 +600,7 @@ ID3D11VertexShader *gpu_jit_get_vsh(ID3D11Device *device,
                 memcpy(copy, instructions, words * sizeof(uint32_t));
             }
             s_vsh_misses++;
-            ID3D11VertexShader *vs = compile_vsh_jit(device, instructions, count, mask16);
+            ID3D11VertexShader *vs = compile_vsh_jit(device, instructions, count, mask16, h);
             if (!vs)
                 s_vsh_fails++;
             e->used = 1;
@@ -774,7 +785,7 @@ static void emit_ps_map_output(StrBuf *sb, const char *expr, uint32_t flags)
     }
 }
 
-static ID3D11PixelShader *compile_ps_jit(ID3D11Device *device, const PsJitKey *k)
+static ID3D11PixelShader *compile_ps_jit(ID3D11Device *device, const PsJitKey *k, uint64_t hash)
 {
     StrBuf sb;
     sb_init(&sb, 8192);
@@ -965,12 +976,14 @@ static ID3D11PixelShader *compile_ps_jit(ID3D11Device *device, const PsJitKey *k
             ID3D10Blob_Release(errors);
         }
         if (SUCCEEDED(hr) && code) {
-            hr = ID3D11Device_CreatePixelShader(device,
-                ID3D10Blob_GetBufferPointer(code),
-                ID3D10Blob_GetBufferSize(code), NULL, &ps);
+            const void *bytes = ID3D10Blob_GetBufferPointer(code);
+            size_t bsize = ID3D10Blob_GetBufferSize(code);
+            hr = ID3D11Device_CreatePixelShader(device, bytes, bsize, NULL, &ps);
             if (FAILED(hr)) {
                 fprintf(stderr, "[PS-JIT] CreatePixelShader failed (0x%08lX)\n", (unsigned long)hr);
                 ps = NULL;
+            } else if (bsize <= 4u * 1024u * 1024u) {
+                shader_cache_save_ps(hash, k, (uint32_t)sizeof(*k), bytes, (uint32_t)bsize);
             }
             ID3D10Blob_Release(code);
         }
@@ -986,6 +999,8 @@ ID3D11PixelShader *gpu_jit_get_ps(ID3D11Device *device,
 {
     if (!device || !combiner || !env_enabled_default_on("RECOMP_PS_JIT", &s_ps_jit_enabled))
         return NULL;
+
+    shader_cache_ensure_loaded(device);
 
     PsJitKey key;
     memset(&key, 0, sizeof key);
@@ -1018,7 +1033,7 @@ ID3D11PixelShader *gpu_jit_get_ps(ID3D11Device *device,
             if (s_ps_count >= PS_CACHE_MAX)
                 return NULL;
             s_ps_misses++;
-            ID3D11PixelShader *ps = compile_ps_jit(device, &key);
+            ID3D11PixelShader *ps = compile_ps_jit(device, &key, h);
             if (!ps)
                 s_ps_fails++;
             e->used = 1;
@@ -1036,6 +1051,229 @@ ID3D11PixelShader *gpu_jit_get_ps(ID3D11Device *device,
     return NULL;
 }
 
+/* ============================================================================
+ * 3. Persistent On-Disk DXBC Shader Bytecode Cache
+ * ============================================================================ */
+
+enum {
+    SHADER_CACHE_MAGIC   = 0x434A4642u, /* "BFJC" */
+    SHADER_CACHE_VERSION = 1u,
+    SHADER_KIND_VSH      = 1u,
+    SHADER_KIND_PS       = 2u
+};
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+} ShaderCacheHeader;
+
+typedef struct {
+    uint32_t kind;
+    uint32_t key_bytes;
+    uint32_t dxbc_bytes;
+    uint32_t reserved;
+    uint64_t hash;
+} ShaderCacheRec;
+
+static int s_cache_inited = 0;
+static FILE *s_cache_file = NULL;
+
+static int shader_cache_resolve_path(char *out, size_t out_sz)
+{
+    const char *env = getenv("RECOMP_SHADER_CACHE");
+    if (env && strcmp(env, "0") == 0)
+        return 0;
+    if (env && *env && strcmp(env, "1") != 0) {
+        _snprintf_s(out, out_sz, _TRUNCATE, "%s", env);
+        return 1;
+    }
+    const char *save_dir = getenv("RECOMP_SAVE_DIR");
+    if (save_dir && *save_dir) {
+        _snprintf_s(out, out_sz, _TRUNCATE, "%s\\bf2_shader_cache.bin", save_dir);
+        return 1;
+    }
+    _snprintf_s(out, out_sz, _TRUNCATE, "bf2_shader_cache.bin");
+    return 1;
+}
+
+static void shader_cache_insert_vsh_loaded(ID3D11Device *device, uint64_t hash,
+                                           uint32_t count, uint32_t mask16,
+                                           const uint32_t *ins,
+                                           const void *dxbc, uint32_t dxbc_bytes,
+                                           unsigned *loaded_count)
+{
+    if (s_vsh_count >= VSH_CACHE_MAX)
+        return;
+    size_t words = (size_t)count * VSH_INST_STRIDE;
+    unsigned slot = (unsigned)(hash & (VSH_CACHE_BUCKETS - 1));
+    for (unsigned probe = 0; probe < VSH_CACHE_BUCKETS; probe++) {
+        VshCacheEntry *e = &s_vsh_cache[(slot + probe) & (VSH_CACHE_BUCKETS - 1)];
+        if (!e->used) {
+            ID3D11VertexShader *vs = NULL;
+            if (FAILED(ID3D11Device_CreateVertexShader(device, dxbc, dxbc_bytes, NULL, &vs)) || !vs)
+                return;
+            uint32_t *copy = NULL;
+            if (words) {
+                copy = (uint32_t *)malloc(words * sizeof(uint32_t));
+                if (!copy) {
+                    ID3D11VertexShader_Release(vs);
+                    return;
+                }
+                memcpy(copy, ins, words * sizeof(uint32_t));
+            }
+            e->used = 1;
+            e->hash = hash;
+            e->ins_count = count;
+            e->stream_mask = mask16;
+            e->ins_copy = copy;
+            e->shader = vs;
+            s_vsh_count++;
+            (*loaded_count)++;
+            return;
+        }
+        if (e->hash == hash && e->ins_count == count && e->stream_mask == mask16 &&
+            (words == 0 || memcmp(e->ins_copy, ins, words * sizeof(uint32_t)) == 0))
+            return;
+    }
+}
+
+static void shader_cache_insert_ps_loaded(ID3D11Device *device, uint64_t hash,
+                                          const PsJitKey *key,
+                                          const void *dxbc, uint32_t dxbc_bytes,
+                                          unsigned *loaded_count)
+{
+    if (s_ps_count >= PS_CACHE_MAX)
+        return;
+    unsigned slot = (unsigned)(hash & (PS_CACHE_BUCKETS - 1));
+    for (unsigned probe = 0; probe < PS_CACHE_BUCKETS; probe++) {
+        PsCacheEntry *e = &s_ps_cache[(slot + probe) & (PS_CACHE_BUCKETS - 1)];
+        if (!e->used) {
+            ID3D11PixelShader *ps = NULL;
+            if (FAILED(ID3D11Device_CreatePixelShader(device, dxbc, dxbc_bytes, NULL, &ps)) || !ps)
+                return;
+            e->used = 1;
+            e->hash = hash;
+            e->key = *key;
+            e->shader = ps;
+            s_ps_count++;
+            (*loaded_count)++;
+            return;
+        }
+        if (e->hash == hash && memcmp(&e->key, key, sizeof(*key)) == 0)
+            return;
+    }
+}
+
+static void shader_cache_ensure_loaded(ID3D11Device *device)
+{
+    if (s_cache_inited)
+        return;
+    s_cache_inited = 1;
+
+    char path[MAX_PATH];
+    if (!shader_cache_resolve_path(path, sizeof path))
+        return;
+
+    LARGE_INTEGER freq, t0, t1;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+
+    int valid_existing = 0;
+    unsigned loaded_vsh = 0, loaded_ps = 0;
+    FILE *rf = NULL;
+    if (fopen_s(&rf, path, "rb") == 0 && rf) {
+        ShaderCacheHeader hdr;
+        if (fread(&hdr, sizeof hdr, 1, rf) == 1 &&
+            hdr.magic == SHADER_CACHE_MAGIC && hdr.version == SHADER_CACHE_VERSION) {
+            valid_existing = 1;
+            ShaderCacheRec rec;
+            while (fread(&rec, sizeof rec, 1, rf) == 1) {
+                if (rec.dxbc_bytes == 0 || rec.dxbc_bytes > 4u * 1024u * 1024u ||
+                    rec.key_bytes > 1024u * 1024u)
+                    break;
+                uint8_t *kbuf = rec.key_bytes ? (uint8_t *)malloc(rec.key_bytes) : NULL;
+                uint8_t *dbuf = (uint8_t *)malloc(rec.dxbc_bytes);
+                if ((rec.key_bytes && !kbuf) || !dbuf) {
+                    free(kbuf);
+                    free(dbuf);
+                    break;
+                }
+                int ok = (!rec.key_bytes || fread(kbuf, rec.key_bytes, 1, rf) == 1) &&
+                         (fread(dbuf, rec.dxbc_bytes, 1, rf) == 1);
+                if (!ok) {
+                    free(kbuf);
+                    free(dbuf);
+                    break;
+                }
+                if (rec.kind == SHADER_KIND_VSH && rec.key_bytes >= 8) {
+                    uint32_t count = 0, mask16 = 0;
+                    memcpy(&count, kbuf, 4);
+                    memcpy(&mask16, kbuf + 4, 4);
+                    size_t expect = 8u + (size_t)count * VSH_INST_STRIDE * sizeof(uint32_t);
+                    if (count <= VSH_MAX_INS && rec.key_bytes == expect) {
+                        shader_cache_insert_vsh_loaded(device, rec.hash, count, mask16,
+                                                       (const uint32_t *)(kbuf + 8),
+                                                       dbuf, rec.dxbc_bytes, &loaded_vsh);
+                    }
+                } else if (rec.kind == SHADER_KIND_PS && rec.key_bytes == sizeof(PsJitKey)) {
+                    PsJitKey key;
+                    memcpy(&key, kbuf, sizeof key);
+                    shader_cache_insert_ps_loaded(device, rec.hash, &key,
+                                                  dbuf, rec.dxbc_bytes, &loaded_ps);
+                }
+                free(kbuf);
+                free(dbuf);
+            }
+        }
+        fclose(rf);
+    }
+
+    if (valid_existing) {
+        fopen_s(&s_cache_file, path, "ab");
+    } else {
+        if (fopen_s(&s_cache_file, path, "wb") == 0 && s_cache_file) {
+            ShaderCacheHeader hdr = { SHADER_CACHE_MAGIC, SHADER_CACHE_VERSION };
+            fwrite(&hdr, sizeof hdr, 1, s_cache_file);
+            fflush(s_cache_file);
+        }
+    }
+
+    QueryPerformanceCounter(&t1);
+    double ms = freq.QuadPart ? (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart : 0.0;
+    if (loaded_vsh || loaded_ps) {
+        fprintf(stderr, "[GPU-JIT-CACHE] loaded %u VSH + %u PS from %s in %.1f ms\n",
+                loaded_vsh, loaded_ps, path, ms);
+    }
+}
+
+static void shader_cache_save_vsh(uint64_t hash, uint32_t ins_count, uint32_t stream_mask,
+                                  const uint32_t *ins, const void *dxbc, uint32_t dxbc_bytes)
+{
+    if (!s_cache_file || !dxbc || !dxbc_bytes)
+        return;
+    uint32_t ins_bytes = ins_count * VSH_INST_STRIDE * (uint32_t)sizeof(uint32_t);
+    ShaderCacheRec rec = { SHADER_KIND_VSH, 8u + ins_bytes, dxbc_bytes, 0, hash };
+    uint32_t khdr[2] = { ins_count, stream_mask & 0xFFFFu };
+    fwrite(&rec, sizeof rec, 1, s_cache_file);
+    fwrite(khdr, sizeof khdr, 1, s_cache_file);
+    if (ins_bytes)
+        fwrite(ins, ins_bytes, 1, s_cache_file);
+    fwrite(dxbc, dxbc_bytes, 1, s_cache_file);
+    fflush(s_cache_file);
+}
+
+static void shader_cache_save_ps(uint64_t hash, const void *key, uint32_t key_bytes,
+                                 const void *dxbc, uint32_t dxbc_bytes)
+{
+    if (!s_cache_file || !key || !dxbc || !dxbc_bytes)
+        return;
+    ShaderCacheRec rec = { SHADER_KIND_PS, key_bytes, dxbc_bytes, 0, hash };
+    fwrite(&rec, sizeof rec, 1, s_cache_file);
+    fwrite(key, key_bytes, 1, s_cache_file);
+    fwrite(dxbc, dxbc_bytes, 1, s_cache_file);
+    fflush(s_cache_file);
+}
+
 void gpu_jit_report_stats(void)
 {
     static uint64_t last_v_miss = 0, last_p_miss = 0;
@@ -1050,6 +1288,11 @@ void gpu_jit_report_stats(void)
 
 void gpu_jit_shutdown(void)
 {
+    if (s_cache_file) {
+        fclose(s_cache_file);
+        s_cache_file = NULL;
+    }
+    s_cache_inited = 0;
     for (unsigned i = 0; i < VSH_CACHE_BUCKETS; i++) {
         if (s_vsh_cache[i].used) {
             if (s_vsh_cache[i].shader)
