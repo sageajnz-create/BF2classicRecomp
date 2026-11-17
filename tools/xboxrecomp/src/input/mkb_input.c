@@ -381,6 +381,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
         mkb_manage_cursor(0);
         InterlockedExchange(&s_dx, 0);
         InterlockedExchange(&s_dy, 0);
+        InterlockedExchange(&s_mouse_btn, 0);
         return 0;
     }
     mkb_manage_cursor(1);
@@ -388,7 +389,7 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     dx    = InterlockedExchange(&s_dx, 0);
     dy    = InterlockedExchange(&s_dy, 0);
     wheel = InterlockedExchange(&s_wheel, 0);
-    btn   = InterlockedExchange(&s_mouse_btn, 0);
+    btn   = InterlockedCompareExchange(&s_mouse_btn, 0, 0);
 
     memset(analog, 0, sizeof analog);
 
@@ -404,8 +405,14 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
         if (MK_VK('S')) my -= 1;
         if (MK_VK('A')) mx -= 1;
         if (MK_VK('D')) mx += 1;
-        if (mx && my) { mx = (int)(mx * 70.71); my = (int)(my * 70.71); }
-        if (mx || my) mkb_aim_vector(mx / 100.0, my / 100.0, &mov_x, &mov_y);
+        if (mx && my) {
+            mov_x = (SHORT)(mx > 0 ? 23170 : -23170);
+            mov_y = (SHORT)(my > 0 ? 23170 : -23170);
+        } else if (mx) {
+            mov_x = (SHORT)(mx > 0 ? 32767 : -32768);
+        } else if (my) {
+            mov_y = (SHORT)(my > 0 ? 32767 : -32768);
+        }
     }
 
     /* ---- mouse: aim ---- */
@@ -416,18 +423,25 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
         mkb_aim_vector(ax, ay, &aim_x, &aim_y);
     }
 
-    /* ---- keyboard: buttons (Black's layout) ---- */
-    if (MK_VK(VK_SPACE))  analog[XBOX_BUTTON_A]     = 255; /* use/jump */
+    /* ---- keyboard: buttons (PC FPS layout for Star Wars Battlefront II) ---- */
+    if (MK_VK(VK_SPACE))  analog[XBOX_BUTTON_A]     = 255; /* use/jump  */
+    if (MK_VK('E'))       analog[XBOX_BUTTON_X]     = 255; /* enter vehicle / action */
     if (MK_VK('R'))       analog[XBOX_BUTTON_X]     = 255; /* reload    */
-    if (MK_VK('E'))       analog[XBOX_BUTTON_B]     = 255; /* alt use   */
+    if (MK_VK('C'))       analog[XBOX_BUTTON_B]     = 255; /* crouch / roll */
     if (MK_VK('Q'))       analog[XBOX_BUTTON_WHITE] = 255; /* grenade   */
-    if (MK_VK('F'))       analog[XBOX_BUTTON_BLACK] = 255; /* alt gren. */
-    if (btn & 0x08)       analog[XBOX_BUTTON_WHITE] = 255; /* X1        */
-    if (btn & 0x10)       analog[XBOX_BUTTON_BLACK] = 255; /* X2        */
+    if (MK_VK('F'))       analog[XBOX_BUTTON_BLACK] = 255; /* alt weapon / melee */
+    if (MK_VK('G'))       analog[XBOX_BUTTON_WHITE] = 255; /* grenade alt */
+    if (MK_VK('1') || MK_VK('2')) analog[XBOX_BUTTON_Y] = 255; /* cycle weapon */
+    if (MK_VK('3'))       analog[XBOX_BUTTON_WHITE] = 255; /* special weapon */
+    if (MK_VK('4'))       analog[XBOX_BUTTON_BLACK] = 255; /* ability / mines */
+    if (btn & 0x08)       analog[XBOX_BUTTON_WHITE] = 255; /* X1 (side mouse) */
+    if (btn & 0x10)       analog[XBOX_BUTTON_BLACK] = 255; /* X2 (side mouse) */
     if (MK_VK(VK_RETURN) || MK_VK(VK_ESCAPE)) b |= XBOX_GAMEPAD_START;
     if (MK_VK(VK_TAB))                         b |= XBOX_GAMEPAD_BACK;
-    if (MK_VK(VK_LSHIFT))                      b |= XBOX_GAMEPAD_LEFT_THUMB;
-    if (MK_VK(VK_LCONTROL))                    b |= XBOX_GAMEPAD_RIGHT_THUMB;
+    if (MK_VK(VK_LSHIFT))                      b |= XBOX_GAMEPAD_LEFT_THUMB;  /* sprint */
+    if (MK_VK(VK_LCONTROL))                    analog[XBOX_BUTTON_B] = 255;   /* ctrl = crouch */
+    if (MK_VK('V'))       b |= XBOX_GAMEPAD_RIGHT_THUMB; /* V = zoom / view switch */
+    if (MK_VK('T'))       b |= XBOX_GAMEPAD_DPAD_UP;     /* T = squad command */
     if (MK_VK(VK_UP))    b |= XBOX_GAMEPAD_DPAD_UP;
     if (MK_VK(VK_DOWN))  b |= XBOX_GAMEPAD_DPAD_DOWN;
     if (MK_VK(VK_LEFT))  b |= XBOX_GAMEPAD_DPAD_LEFT;
@@ -468,8 +482,12 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     }
 
     /* Edge detection: a title polling for changes ignores a state whose
-     * packet number did not move. */
-    if (any)
+     * packet number did not move. When motion stops, bump packet once more
+     * so the title sees the sticks return to center. */
+    static int s_had_movement = 0;
+    if (any || s_had_movement) {
         pState->dwPacketNumber = ++packet;
+        s_had_movement = (aim_x != 0 || aim_y != 0 || mov_x != 0 || mov_y != 0);
+    }
     return any;
 }

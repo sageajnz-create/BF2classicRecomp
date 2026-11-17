@@ -3047,15 +3047,32 @@ static int present_world(const void *target, uint32_t pitch)
     ID3D11DeviceContext_OMSetRenderTargets(world.context, 1, &back_rtv, NULL);
     ID3D11DeviceContext_ClearRenderTargetView(world.context, back_rtv, black);
 
-    /* Centred 4:3 letterbox */
-    float sx = (float)world.swapchain_w / (float)WIDTH;
-    float sy = (float)world.swapchain_h / (float)HEIGHT;
-    float scale = sx < sy ? sx : sy;
+    /* Aspect-ratio preserving presentation viewport with optional widescreen override */
+    uint32_t sw = surface->width ? surface->width : WIDTH;
+    uint32_t sh = surface->height ? surface->height : HEIGHT;
+    const char *aspect_env = getenv("RECOMP_ASPECT");
+    float aspect = (float)sw / (float)sh;
+    if (aspect_env && *aspect_env) {
+        if (!strcmp(aspect_env, "16:9") || !strcmp(aspect_env, "widescreen") || !strcmp(aspect_env, "16/9"))
+            aspect = 16.0f / 9.0f;
+        else if (!strcmp(aspect_env, "4:3") || !strcmp(aspect_env, "4/3"))
+            aspect = 4.0f / 3.0f;
+        else if (!strcmp(aspect_env, "16:10") || !strcmp(aspect_env, "16/10"))
+            aspect = 16.0f / 10.0f;
+        else if (!strcmp(aspect_env, "stretch") || !strcmp(aspect_env, "fill"))
+            aspect = (float)world.swapchain_w / (float)world.swapchain_h;
+    }
+    float view_w = (float)world.swapchain_w;
+    float view_h = view_w / aspect;
+    if (view_h > (float)world.swapchain_h) {
+        view_h = (float)world.swapchain_h;
+        view_w = view_h * aspect;
+    }
     D3D11_VIEWPORT vp;
-    vp.Width = (float)WIDTH * scale;
-    vp.Height = (float)HEIGHT * scale;
-    vp.TopLeftX = ((float)world.swapchain_w - vp.Width) * 0.5f;
-    vp.TopLeftY = ((float)world.swapchain_h - vp.Height) * 0.5f;
+    vp.Width = view_w;
+    vp.Height = view_h;
+    vp.TopLeftX = ((float)world.swapchain_w - view_w) * 0.5f;
+    vp.TopLeftY = ((float)world.swapchain_h - view_h) * 0.5f;
     vp.MinDepth = 0;
     vp.MaxDepth = 1;
     ID3D11DeviceContext_RSSetViewports(world.context, 1, &vp);
