@@ -1,0 +1,77 @@
+# =============================================================================
+# Star Wars Battlefront II (2005) Native PC Recompilation - .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Game Assets and Binaries (Users must supply their own legally owned copy)
+# -----------------------------------------------------------------------------
+*.iso
+*.xiso
+*.xbe
+StarWarsBattlefrontII.iso
+default.xbe
+bf2_recomp/game_files/
+game/
+
+# -----------------------------------------------------------------------------
+# Build Artifacts & Intermediate Outputs
+# -----------------------------------------------------------------------------
+build/
+bin/
+out/
+Debug/
+Release/
+x64/
+x86/
+Testing/
+*.obj
+*.o
+*.lib
+*.a
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.tlog
+*.idb
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.sln
+*.vcxproj
+*.vcxproj.*
+
+# -----------------------------------------------------------------------------
+# Large Benchmark Logs & Telemetry Captures
+# -----------------------------------------------------------------------------
+logs/
+*.bmp
+ring2-last.png
+uavprobe.obj
+
+# -----------------------------------------------------------------------------
+# Xboxrecomp Disassembly Tool Intermediate Pipeline Outputs
+# -----------------------------------------------------------------------------
+tools/xboxrecomp/tools/disasm/output/
+tools/xboxrecomp/tools/func_id/output/
+tools/xboxrecomp/tools/recomp/output/
+tools/xboxrecomp/tools/abi_analysis/output/
+tools/xboxrecomp/tools/split/output/
+tools/xboxrecomp/cases/local/
+
+# -----------------------------------------------------------------------------
+# Python, IDE, and OS Metadata
+# -----------------------------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
