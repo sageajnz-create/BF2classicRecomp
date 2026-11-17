@@ -28,16 +28,18 @@ uint vertex_word(uint address)
 float4 gather_attribute(uint slot, uint index)
 {
     if (!(g_stream_mask & (1u << slot))) return g_attribute_defaults[slot];
+    if (index >= 0x01000000u) return float4(0, 0, 0, 1);
     uint4 d = g_attributes[slot];
     float4 result = float4(0, 0, 0, 1);
     uint n = min(d.w, 4u);
     if (!n || !d.y) return result;
     uint bytes = (d.z == 0 || d.z == 6) ? 4 :
                  (d.z == 1 || d.z == 5) ? 2 * n : d.z == 4 ? n : 4 * n;
-    /* Subtract before multiplying so hostile indices cannot wrap into range. */
     if (d.x > g_vertex_bytes || bytes > g_vertex_bytes - d.x) return result;
-    if (index > (g_vertex_bytes - d.x - bytes) / d.y) return result;
-    uint address = d.x + index * d.y;
+    uint max_offset = g_vertex_bytes - d.x - bytes;
+    uint offset = index * d.y;
+    if (offset > max_offset) return result;
+    uint address = d.x + offset;
     if (d.z == 0) {
         uint v = vertex_word(address);
         return float4((v >> 16) & 255, (v >> 8) & 255, v & 255, v >> 24) / 255.0;
