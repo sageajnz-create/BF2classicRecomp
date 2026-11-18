@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../tauriBridge.ts";
 
 interface RecompConfig {
   aspect: string;
@@ -169,7 +169,32 @@ export default {
       </div>
     `;
 
-    let activeConfig: RecompConfig;
+    let activeConfig: RecompConfig = {
+      aspect: "16:9",
+      res_scale: 2,
+      window_scale: 2,
+      fullscreen: 0,
+      anisotropy: 16,
+      cas: 1,
+      gpu_vsh: 1,
+      shader_cache: 1,
+      visibility_uav: 1,
+      pipelined_query: 0,
+      pb_kick_ack: 0,
+      vsync: 0,
+      fps_limit: 0,
+      show_fps: 1,
+      mouse_input: 1,
+      mouse_sens: 1.0,
+      mouse_full: 48,
+      mouse_sens_x: 1.0,
+      mouse_sens_y: 1.0,
+      mouse_smoothing: 0,
+      mouse_acc: 1.0,
+      mouse_invert_y: 0,
+      deadzone: 0.18,
+      dispatch_gate: 1,
+    };
 
     try {
       activeConfig = await invoke<RecompConfig>("get_game_config");
@@ -238,6 +263,16 @@ export default {
 
       try {
         await invoke("save_game_config", { config: updated });
+        activeConfig = updated;
+        const resLabels: Record<number, string> = {
+          1: "640x480 (1x Native)",
+          2: "1280x960 (2x HD)",
+          3: "1920x1440 (3x QHD)",
+          4: "2560x1920 (4x 4K)",
+        };
+        const footerRes = document.getElementById("footer-res-summary");
+        if (footerRes) footerRes.innerText = `INTERNAL: ${resLabels[updated.res_scale] || "2x HD"} | ASPECT: ${updated.aspect}`;
+
         const saveBtn = document.getElementById("btn-save-settings");
         if (saveBtn) {
           const original = saveBtn.innerText;
@@ -249,7 +284,17 @@ export default {
           }, 1500);
         }
       } catch (err: any) {
-        alert("Failed to save settings: " + err?.toString());
+        const saveBtn = document.getElementById("btn-save-settings");
+        if (saveBtn) {
+          const original = saveBtn.innerText;
+          saveBtn.innerText = "SAVE FAILED";
+          saveBtn.className = "px-6 py-2 rounded-lg bg-recomp-imperial text-white font-bold font-mono tracking-wider transition";
+          setTimeout(() => {
+            saveBtn.innerText = original;
+            saveBtn.className = "px-6 py-2 rounded-lg bg-recomp-accent hover:bg-recomp-accentHover text-slate-950 font-bold font-mono tracking-wider transition shadow-[0_0_15px_rgba(56,189,248,0.3)]";
+          }, 2000);
+        }
+        console.error("Failed to save settings:", err);
       }
     });
   },

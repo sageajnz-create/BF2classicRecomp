@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../tauriBridge.ts";
 
 interface ModInfo {
   id: string;
@@ -35,6 +35,9 @@ export default {
           <div class="text-[11px] font-mono text-recomp-textMuted mt-1">Zip Slip protected safe extraction directly into game_files/addon/</div>
           <input type="file" id="mod-file-input" accept=".zip" class="hidden" />
         </div>
+
+        <!-- Inline Status Notice -->
+        <div id="mod-status-notice" class="hidden mb-3 rounded border px-4 py-2 text-xs font-mono"></div>
 
         <!-- Mods Table -->
         <div class="flex-1 bg-recomp-panel border border-recomp-border rounded-lg overflow-hidden flex flex-col">
@@ -112,7 +115,11 @@ export default {
                 await invoke("toggle_mod_state", { modId, enable: !isCurrentlyEnabled });
                 await loadMods();
               } catch (err: any) {
-                alert("Failed to toggle mod: " + err?.toString());
+                const notice = document.getElementById("mod-status-notice");
+                if (notice) {
+                  notice.className = "mb-3 rounded border border-red-500/40 bg-red-950/40 px-4 py-2 text-xs font-mono text-red-300";
+                  notice.innerText = "Failed to toggle mod: " + (err?.message || err?.toString());
+                }
               }
             }
           });
@@ -122,12 +129,51 @@ export default {
       }
     }
 
+    async function handleZipUpload(file: File) {
+      const notice = document.getElementById("mod-status-notice");
+      if (!file.name.toLowerCase().endsWith(".zip")) {
+        if (notice) {
+          notice.className = "mb-3 rounded border border-red-500/40 bg-red-950/40 px-4 py-2 text-xs font-mono text-red-300";
+          notice.innerText = "Only .zip mod archives are supported.";
+        }
+        return;
+      }
+
+      try {
+        if (notice) {
+          notice.className = "mb-3 rounded border border-recomp-accent/40 bg-recomp-panel px-4 py-2 text-xs font-mono text-recomp-accent";
+          notice.innerText = `Extracting ${file.name} into game_files/addon/...`;
+        }
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = "";
+        for (let i = 0; i < bytes.length; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        const dataBase64 = btoa(binary);
+        const res = await invoke<{ modId: string }>("install_mod_archive", {
+          filename: file.name,
+          dataBase64,
+        });
+        if (notice) {
+          notice.className = "mb-3 rounded border border-emerald-500/40 bg-emerald-950/30 px-4 py-2 text-xs font-mono text-emerald-300";
+          notice.innerText = `Installed mod '${res.modId}' into game_files/addon/.`;
+        }
+        await loadMods();
+      } catch (err: any) {
+        if (notice) {
+          notice.className = "mb-3 rounded border border-red-500/40 bg-red-950/40 px-4 py-2 text-xs font-mono text-red-300";
+          notice.innerText = "Failed to install archive: " + (err?.message || err?.toString());
+        }
+      }
+    }
+
     // Refresh button
     document.getElementById("btn-refresh-mods")?.addEventListener("click", () => {
       loadMods();
     });
 
-    // Drop zone click triggers file input
+    // Drop zone click triggers file input & supports drag-and-drop
     const dropZone = document.getElementById("mod-drop-zone");
     const fileInput = document.getElementById("mod-file-input") as HTMLInputElement;
 
@@ -135,11 +181,25 @@ export default {
       fileInput?.click();
     });
 
+    dropZone?.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropZone.classList.add("border-recomp-accent");
+    });
+
+    dropZone?.addEventListener("dragleave", () => {
+      dropZone.classList.remove("border-recomp-accent");
+    });
+
+    dropZone?.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("border-recomp-accent");
+      const file = e.dataTransfer?.files?.[0];
+      if (file) await handleZipUpload(file);
+    });
+
     fileInput?.addEventListener("change", async (e) => {
       const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        alert("To install archive, drop the file directly onto the window or copy it to game_files/addon/.");
-      }
+      if (file) await handleZipUpload(file);
     });
 
     loadMods();

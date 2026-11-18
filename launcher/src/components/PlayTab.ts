@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, listen, type LaunchResult } from "../tauriBridge.ts";
 
 interface RecompConfig {
   aspect: string;
@@ -14,7 +13,15 @@ interface ModInfo {
   is_enabled: boolean;
 }
 
+let unlistenExit: (() => void) | null = null;
+
 export default {
+  unmount() {
+    if (unlistenExit) {
+      unlistenExit();
+      unlistenExit = null;
+    }
+  },
   async mount(container: HTMLElement) {
     container.innerHTML = `
       <div class="flex-1 flex flex-col justify-between max-w-4xl mx-auto w-full py-4">
@@ -121,7 +128,25 @@ export default {
             <span class="text-recomp-accent">STATUS: RUNNING</span>
           `;
         }
-        await invoke("launch_game", { options: {} });
+        const res = await invoke<LaunchResult>("launch_game", { options: {} });
+        if (res?.mode === "web-preview") {
+          const crashAlert = document.getElementById("crash-alert");
+          const crashLogText = document.getElementById("crash-log-text");
+          if (crashAlert && crashLogText) {
+            crashAlert.className = "bg-recomp-panel border border-recomp-accent/40 rounded-lg p-4 text-xs font-mono text-recomp-textLight";
+            const headerSpan = crashAlert.querySelector("span");
+            if (headerSpan) {
+              headerSpan.className = "text-recomp-accent";
+              headerSpan.innerText = "LAUNCH COMMAND PREVIEW (WEB CONTAINER):";
+            }
+            const envSummary = Object.entries(res.envs || {})
+              .slice(0, 8)
+              .map(([k, v]) => `${k}=${v}`)
+              .join(" ");
+            crashLogText.className = "overflow-x-auto text-[11px] text-slate-300 max-h-32 bg-black/40 p-2 rounded mt-2";
+            crashLogText.innerText = `${res.message}\n\nTarget: ${res.binary} ${(res.args || []).join(" ")}\nEnv: ${envSummary} ...`;
+          }
+        }
       } catch (err: any) {
         if (statusPill) {
           statusPill.innerHTML = `
@@ -129,12 +154,17 @@ export default {
             <span class="text-recomp-imperial">ERROR</span>
           `;
         }
-        alert("Launch Failed: " + (err?.toString() || "Unknown error"));
+        const crashAlert = document.getElementById("crash-alert");
+        const crashLogText = document.getElementById("crash-log-text");
+        if (crashAlert && crashLogText) {
+          crashAlert.className = "bg-red-950/40 border border-red-500/40 rounded-lg p-4 text-xs font-mono text-red-200";
+          crashLogText.innerText = "Launch Failed: " + (err?.message || err?.toString() || "Unknown error");
+        }
       }
     });
 
     // Listen for game exit event
-    await listen<any>("game-exit", (event) => {
+    unlistenExit = await listen<any>("game-exit", (event) => {
       const statusPill = document.getElementById("play-status-pill");
       if (statusPill) {
         statusPill.innerHTML = `

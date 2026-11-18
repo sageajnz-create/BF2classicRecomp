@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type LaunchResult } from "../tauriBridge.ts";
 
 interface ServerInfo {
   id: string;
@@ -43,6 +43,9 @@ export default {
             </button>
           </div>
         </div>
+
+        <!-- Inline Status Notice -->
+        <div id="server-status-notice" class="hidden mb-3 rounded border px-4 py-2 text-xs font-mono"></div>
 
         <!-- Servers Table -->
         <div class="flex-1 bg-recomp-panel border border-recomp-border rounded-lg overflow-hidden flex flex-col">
@@ -115,15 +118,25 @@ export default {
     }
 
     async function connectToServer(ip: string, port: number) {
+      const notice = document.getElementById("server-status-notice");
       try {
-        await invoke("launch_game", {
+        const res = await invoke<LaunchResult>("launch_game", {
           options: {
             connect_ip: ip,
             connect_port: port,
           },
         });
+        if (notice) {
+          notice.className = "mb-3 rounded border border-recomp-accent/40 bg-recomp-panel px-4 py-2 text-xs font-mono text-recomp-accent";
+          notice.innerText = res?.mode === "web-preview"
+            ? `Prepared direct connect: swbf2_recomp.exe -connect ${ip}:${port} (native binary unavailable in web preview)`
+            : `Launching game and connecting to ${ip}:${port}...`;
+        }
       } catch (err: any) {
-        alert("Failed to connect: " + err?.toString());
+        if (notice) {
+          notice.className = "mb-3 rounded border border-red-500/40 bg-red-950/40 px-4 py-2 text-xs font-mono text-red-300";
+          notice.innerText = "Failed to connect: " + (err?.message || err?.toString());
+        }
       }
     }
 
