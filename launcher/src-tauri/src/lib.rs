@@ -13,6 +13,8 @@ pub fn run() {
             config_manager::save_game_config,
             process_runner::launch_game,
             process_runner::is_game_running,
+            mod_scanner::list_mods,
+            mod_scanner::toggle_mod_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
