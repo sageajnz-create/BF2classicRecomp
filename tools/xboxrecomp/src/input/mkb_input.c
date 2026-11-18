@@ -27,7 +27,9 @@
 #ifndef WINVER
 #define WINVER 0x0601
 #endif
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 
 #include "mkb_input.h"
 
@@ -41,14 +43,17 @@
 
 typedef struct {
     double sens;        /* multiplier on the aim deflection          */
+    double sens_x;      /* horizontal sensitivity multiplier         */
+    double sens_y;      /* vertical sensitivity multiplier           */
     double dz;          /* assumed game deadzone, 0..1               */
     double acc;         /* aim acceleration exponent, 1 = linear     */
     long   full;        /* mouse counts for full throw, per poll     */
+    int    smooth;      /* mouse smoothing filter: 0 = raw, 1 = smooth */
     int    invert_y;    /* invert the vertical aim axis              */
     int    swap_sticks; /* mouse aims with the left stick instead    */
 } MkbConfig;
 
-static MkbConfig s_cfg = { 1.0, 0.18, 1.0, 8, 0, 0 };
+static MkbConfig s_cfg = { 1.0, 1.0, 1.0, 0.18, 1.0, 48, 0, 0, 0 };
 
 /* One "key=value" line; returns 1 when the key was recognised. */
 static int mkb_apply_kv(const char *key, const char *val)
@@ -58,13 +63,19 @@ static int mkb_apply_kv(const char *key, const char *val)
 
     if (!strcmp(key, "sens")) {
         d = strtod(val, NULL); if (d > 0.0 && d < 100.0) s_cfg.sens = d;
-    } else if (!strcmp(key, "dz")) {
+    } else if (!strcmp(key, "sens_x")) {
+        d = strtod(val, NULL); if (d > 0.0 && d < 100.0) s_cfg.sens_x = d;
+    } else if (!strcmp(key, "sens_y")) {
+        d = strtod(val, NULL); if (d > 0.0 && d < 100.0) s_cfg.sens_y = d;
+    } else if (!strcmp(key, "smooth") || !strcmp(key, "mouse_smoothing")) {
+        s_cfg.smooth = atoi(val) != 0;
+    } else if (!strcmp(key, "dz") || !strcmp(key, "deadzone")) {
         d = strtod(val, NULL); if (d >= 0.0 && d < 0.9) s_cfg.dz = d;
     } else if (!strcmp(key, "acc")) {
         d = strtod(val, NULL); if (d > 0.0 && d < 10.0) s_cfg.acc = d;
-    } else if (!strcmp(key, "full")) {
-        l = strtol(val, NULL, 0); if (l > 0 && l < 1000) s_cfg.full = l;
-    } else if (!strcmp(key, "invert_y")) {
+    } else if (!strcmp(key, "full") || !strcmp(key, "mouse_full")) {
+        l = strtol(val, NULL, 0); if (l > 0 && l < 10000) s_cfg.full = l;
+    } else if (!strcmp(key, "invert_y") || !strcmp(key, "mouse_invert_y")) {
         s_cfg.invert_y = atoi(val) != 0;
     } else if (!strcmp(key, "swap_sticks")) {
         s_cfg.swap_sticks = atoi(val) != 0;
@@ -77,10 +88,14 @@ static int mkb_apply_kv(const char *key, const char *val)
 static void mkb_load_config(void)
 {
     static const char *kv[] = {
-        "RECOMP_MKB_SENS", "sens",
-        "RECOMP_MKB_DZ",   "dz",
-        "RECOMP_MKB_ACC",  "acc",
-        "RECOMP_MKB_FULL", "full",
+        "RECOMP_MKB_SENS",      "sens",
+        "RECOMP_MKB_SENS_X",    "sens_x",
+        "RECOMP_MKB_SENS_Y",    "sens_y",
+        "RECOMP_MKB_SMOOTH",    "smooth",
+        "RECOMP_MKB_DZ",        "dz",
+        "RECOMP_MKB_DEADZONE",  "dz",
+        "RECOMP_MKB_ACC",       "acc",
+        "RECOMP_MKB_FULL",      "full",
         "RECOMP_MKB_INVERT_Y",  "invert_y",
         "RECOMP_MKB_SWAP_STICKS", "swap_sticks",
         NULL
@@ -310,25 +325,45 @@ static int game_is_foreground(void)
  * does not move the pointer by itself, but Windows still moves it from
  * the same physical movement, so it would wander across the screen and
  * end up clicking other apps' title bars. */
+static int s_cursor_hidden = 0;
+static int s_cursor_clipped = 0;
+
+/* Hide and confine the pointer while captured. Aiming with raw deltas
+ * does not move the pointer by itself, but Windows still moves it from
+ * the same physical movement, so it would wander across the screen and
+ * end up clicking other apps' title bars. */
 static void mkb_manage_cursor(int capture)
 {
-    static int hidden;          /* how many ShowCursor(FALSE) we owe  */
-    static unsigned long last;
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    if (fg)
+        GetWindowThreadProcessId(fg, &pid);
+    int is_fg = (fg && pid == GetCurrentProcessId());
 
-    unsigned long now = GetTickCount();
-    if (now - last < 500 && (capture ? hidden : !hidden) == 0)
-        return;
-    last = now;
-
-    if (capture) {
-        RECT r;
-        HWND fg = GetForegroundWindow();
-        if (fg && GetWindowRect(fg, &r))
-            ClipCursor(&r);
-        if (hidden < 5) { ShowCursor(FALSE); hidden++; }
+    if (capture && is_fg) {
+        RECT rc;
+        if (GetClientRect(fg, &rc)) {
+            POINT pt1 = { rc.left, rc.top };
+            POINT pt2 = { rc.right, rc.bottom };
+            ClientToScreen(fg, &pt1);
+            ClientToScreen(fg, &pt2);
+            RECT clip = { pt1.x, pt1.y, pt2.x, pt2.y };
+            ClipCursor(&clip);
+            s_cursor_clipped = 1;
+        }
+        if (!s_cursor_hidden) {
+            while (ShowCursor(FALSE) >= 0) {}
+            s_cursor_hidden = 1;
+        }
     } else {
-        if (hidden > 0) { ShowCursor(TRUE); hidden--; }
-        ClipCursor(NULL);
+        if (s_cursor_clipped) {
+            ClipCursor(NULL);
+            s_cursor_clipped = 0;
+        }
+        if (s_cursor_hidden) {
+            while (ShowCursor(TRUE) < 0) {}
+            s_cursor_hidden = 0;
+        }
     }
 }
 
@@ -341,13 +376,17 @@ static void mkb_aim_vector(double ax, double ay, SHORT *out_x, SHORT *out_y)
     double len, fx, fy;
     long v;
 
-    if (r <= 0.0) { *out_x = 0; *out_y = 0; return; }
+    if (r <= 0.00001) { *out_x = 0; *out_y = 0; return; }
     if (r > 1.0) r = 1.0;
-    len = s_cfg.dz + (1.0 - s_cfg.dz) * pow(r, s_cfg.acc);
+    
+    double curve = (s_cfg.acc == 1.0) ? r : pow(r, s_cfg.acc);
+    len = s_cfg.dz + (1.0 - s_cfg.dz) * curve;
     len *= s_cfg.sens;
     if (len > 1.0) len = 1.0;
-    fx = ax * len / sqrt(ax * ax + ay * ay);
-    fy = ay * len / sqrt(ax * ax + ay * ay);
+    
+    fx = (ax / r) * len;
+    fy = (ay / r) * len;
+    
     v = (long)(fx * 32767.0);
     *out_x = (SHORT)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
     v = (long)(fy * 32767.0);
@@ -396,7 +435,9 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     /* ---- mouse buttons, as the Xbox pad sees them ---- */
     if (btn & 0x01) analog[XBOX_BUTTON_RTRIGGER] = 255;  /* fire      */
     if (btn & 0x02) analog[XBOX_BUTTON_LTRIGGER] = 255;  /* ADS/aim   */
-    if (btn & 0x04) b |= 0;                              /* M: below  */
+    if (btn & 0x04) analog[XBOX_BUTTON_Y]        = 255;  /* M: cycle weapon */
+    if (btn & 0x08) analog[XBOX_BUTTON_WHITE]    = 255;  /* Mouse 4 (Thumb): grenade */
+    if (btn & 0x10) analog[XBOX_BUTTON_BLACK]    = 255;  /* Mouse 5 (Thumb): alt/melee */
 
     /* ---- keyboard: WASD movement ---- */
     {
@@ -416,36 +457,51 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     }
 
     /* ---- mouse: aim ---- */
+    static double s_filt_ax = 0.0, s_filt_ay = 0.0;
     if (dx || dy) {
-        double ax =  (double)dx / (double)s_cfg.full;
-        double ay = -(double)dy / (double)s_cfg.full;
+        double ax = ((double)dx / (double)s_cfg.full) * s_cfg.sens_x;
+        double ay = -((double)dy / (double)s_cfg.full) * s_cfg.sens_y;
         if (s_cfg.invert_y) ay = -ay;
+        if (s_cfg.smooth) {
+            double alpha = 0.65;
+            s_filt_ax = s_filt_ax * (1.0 - alpha) + ax * alpha;
+            s_filt_ay = s_filt_ay * (1.0 - alpha) + ay * alpha;
+            ax = s_filt_ax;
+            ay = s_filt_ay;
+        }
         mkb_aim_vector(ax, ay, &aim_x, &aim_y);
+    } else {
+        s_filt_ax = 0.0;
+        s_filt_ay = 0.0;
     }
 
     /* ---- keyboard: buttons (PC FPS layout for Star Wars Battlefront II) ---- */
-    if (MK_VK(VK_SPACE))  analog[XBOX_BUTTON_A]     = 255; /* use/jump  */
-    if (MK_VK('E'))       analog[XBOX_BUTTON_X]     = 255; /* enter vehicle / action */
-    if (MK_VK('R'))       analog[XBOX_BUTTON_X]     = 255; /* reload    */
-    if (MK_VK('C'))       analog[XBOX_BUTTON_B]     = 255; /* crouch / roll */
-    if (MK_VK('Q'))       analog[XBOX_BUTTON_WHITE] = 255; /* grenade   */
-    if (MK_VK('F'))       analog[XBOX_BUTTON_BLACK] = 255; /* alt weapon / melee */
-    if (MK_VK('G'))       analog[XBOX_BUTTON_WHITE] = 255; /* grenade alt */
+    if (MK_VK(VK_SPACE))       analog[XBOX_BUTTON_A]     = 255; /* use/jump / menu select */
+    if (MK_VK('E'))            analog[XBOX_BUTTON_X]     = 255; /* enter vehicle / action */
+    if (MK_VK('R'))            analog[XBOX_BUTTON_X]     = 255; /* reload    */
+    if (MK_VK('C'))            analog[XBOX_BUTTON_B]     = 255; /* crouch / roll */
+    if (MK_VK(VK_LCONTROL))    analog[XBOX_BUTTON_B]     = 255; /* ctrl = crouch */
+    if (MK_VK(VK_LMENU))       analog[XBOX_BUTTON_B]     = 255; /* alt = crouch / roll */
+    if (MK_VK(VK_BACK))        analog[XBOX_BUTTON_B]     = 255; /* backspace = menu back */
+    if (MK_VK('Z'))            analog[XBOX_BUTTON_A]     = 255; /* Z = A button (menu select) */
+    if (MK_VK('X'))            analog[XBOX_BUTTON_B]     = 255; /* X = B button (menu back) */
+    if (MK_VK('Q'))            analog[XBOX_BUTTON_WHITE] = 255; /* grenade   */
+    if (MK_VK('F'))            analog[XBOX_BUTTON_BLACK] = 255; /* alt weapon / melee */
+    if (MK_VK('G'))            analog[XBOX_BUTTON_WHITE] = 255; /* grenade alt */
     if (MK_VK('1') || MK_VK('2')) analog[XBOX_BUTTON_Y] = 255; /* cycle weapon */
-    if (MK_VK('3'))       analog[XBOX_BUTTON_WHITE] = 255; /* special weapon */
-    if (MK_VK('4'))       analog[XBOX_BUTTON_BLACK] = 255; /* ability / mines */
-    if (btn & 0x08)       analog[XBOX_BUTTON_WHITE] = 255; /* X1 (side mouse) */
-    if (btn & 0x10)       analog[XBOX_BUTTON_BLACK] = 255; /* X2 (side mouse) */
-    if (MK_VK(VK_RETURN) || MK_VK(VK_ESCAPE)) b |= XBOX_GAMEPAD_START;
-    if (MK_VK(VK_TAB))                         b |= XBOX_GAMEPAD_BACK;
-    if (MK_VK(VK_LSHIFT))                      b |= XBOX_GAMEPAD_LEFT_THUMB;  /* sprint */
-    if (MK_VK(VK_LCONTROL))                    analog[XBOX_BUTTON_B] = 255;   /* ctrl = crouch */
-    if (MK_VK('V'))       b |= XBOX_GAMEPAD_RIGHT_THUMB; /* V = zoom / view switch */
-    if (MK_VK('T'))       b |= XBOX_GAMEPAD_DPAD_UP;     /* T = squad command */
-    if (MK_VK(VK_UP))    b |= XBOX_GAMEPAD_DPAD_UP;
-    if (MK_VK(VK_DOWN))  b |= XBOX_GAMEPAD_DPAD_DOWN;
-    if (MK_VK(VK_LEFT))  b |= XBOX_GAMEPAD_DPAD_LEFT;
-    if (MK_VK(VK_RIGHT)) b |= XBOX_GAMEPAD_DPAD_RIGHT;
+    if (MK_VK('3'))            analog[XBOX_BUTTON_WHITE] = 255; /* special weapon */
+    if (MK_VK('4'))            analog[XBOX_BUTTON_BLACK] = 255; /* ability / mines */
+    if (MK_VK(VK_RETURN))      b |= XBOX_GAMEPAD_START;         /* Enter = Start / pause */
+    if (MK_VK(VK_ESCAPE))      b |= XBOX_GAMEPAD_START;         /* Esc = Pause */
+    if (MK_VK(VK_TAB))         b |= XBOX_GAMEPAD_BACK;          /* Tab = Scoreboard / stats */
+    if (MK_VK('M'))            b |= XBOX_GAMEPAD_BACK;          /* M = Map / Command Post */
+    if (MK_VK(VK_LSHIFT))      b |= XBOX_GAMEPAD_LEFT_THUMB;    /* sprint */
+    if (MK_VK('V'))            b |= XBOX_GAMEPAD_RIGHT_THUMB;   /* V = zoom / view switch */
+    if (MK_VK('T'))            b |= XBOX_GAMEPAD_DPAD_UP;       /* T = squad command */
+    if (MK_VK(VK_UP))          b |= XBOX_GAMEPAD_DPAD_UP;
+    if (MK_VK(VK_DOWN))        b |= XBOX_GAMEPAD_DPAD_DOWN;
+    if (MK_VK(VK_LEFT))        b |= XBOX_GAMEPAD_DPAD_LEFT;
+    if (MK_VK(VK_RIGHT))       b |= XBOX_GAMEPAD_DPAD_RIGHT;
 
     /* ---- wheel / middle button: cycle weapon ---- */
     if (wheel || (btn & 0x04))

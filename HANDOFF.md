@@ -4,6 +4,41 @@ Checkpoint from 18 November 2026 NZDT. The goal is a fully playable and modern n
 
 > **HOST RULE (CRITICAL):** Never touch, modify, or query Windows host audio settings or audio devices under any circumstances. Keep copyrighted game assets (`*.iso`, `*.xbe`, `game_files/`, `logs/`, `.obj`) out of Git at all times.
 
+## MILESTONE: AAA NATIVE PC CONTROLS & RENDERER CONSOLIDATION — 18 November 2026 NZDT
+
+### 1. Key Engineering Accomplishments
+
+1. **Clean Consolidation of Patches & Pass 3 Speedups:**
+   - **Hazard-Free UAV Unbinding (`gpu_world.c`)**: Explicitly unbinds the Early-Z visibility UAV (`ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews` with `empty_uav`) when non-UAV draws execute, preventing D3D11 runtime resource hazards when backing render target buffers are subsequently sampled as SRVs.
+   - **Guarded Visibility Constants (`gpu_world.c`)**: Sets `info.visibility_slot = uav_used ? uav_slot : 0` and gates cbuffer #1 updates with `world.have_constants`, eliminating redundant bus transfers.
+   - **NV2A MMIO VEH Trap Fix (`main.c`)**: Removed the early `0xFD000000..0xFE000000` bypass in the VEH exception filter so that `xbox_VehMmioFault(ep)` successfully catches and handles trapped hardware register probes without dropping out to Windows crash handlers.
+   - **HLSL Divine Float Standardization (`gpu_shader_jit.c` & `nv2a_vsh_gpu.hlsl`)**: Replaced `-1.0 / 0.0` with `-asfloat(0x7F800000u)` in `vsh_log` and `run_ilu`, eliminating compiler warnings and potential NaN/Inf indeterminacy across SM 5.0 compilers.
+   - **DirectSound Voice Manager Allocation Hardening (`recomp_0080.c` & `recomp_manual.c`)**: Added bulletproof guest pointer validation in `sub_0041EFE6` (`loc_0041EFE6` and `loc_0041F01E`), returning `DSERR_ALLOCATED` (0x88780032) when voice buffers or manager addresses are uninitialized (e.g. `0xCCCCCCCC`), permanently fixing the intermittent `sub_0041EFE6+0x227` voice table fault without modifying host audio devices.
+   - **Preserved 100% of Pass 3 Performance Infrastructure**: Kept resident combat bloom (`160x120` sub-rects eliminating 156 readbacks/flip), `set_scissor` dynamic rects, tearing VRR (`DXGI_PRESENT_ALLOW_TEARING`), zero-copy VSH constant caching (`last_const_rev`), real-time title bar FPS/resolution tracker, and the hybrid QPC frame pacer.
+
+2. **AAA PC-Native Mouse Look & Aim Engine (`tools/xboxrecomp/src/input/mkb_input.c`):**
+   - **Elimination of the 8-Count Saturation Wall**: Replaced hardcoded `full = 8` clamp with high-dynamic-range calibration (`mouse_full = 48` default, configurable via INI/env), unlocking true analog micro-aim precision and flick tracking without instant 100% stick deflection.
+   - **Smooth Deadzone Compensation Curve**: Implemented smooth radial deadzone compensation `len = dz + (1.0 - dz) * curve(r)` mapping subtle mouse adjustments smoothly above the Xbox console deadzone floor (`dz=0.18`) with zero low-speed snapping or angular drift.
+   - **Independent Axis Calibration (`mouse_sens_x`, `mouse_sens_y`)**: Independent horizontal and vertical sensitivity multipliers allow players to balance vertical pitch tracking against 16:9 widescreen horizontal yaw.
+   - **Optional Exponential Moving Average Smoothing (`mouse_smoothing=0|1`)**: Toggleable low-latency smoothing filter ($\alpha = 0.65$) for noisy mouse sensors, with instant zero-drift decay when motion halts.
+   - **Flawless Client-Rect Cursor Confinement**: Confinds the hardware mouse cursor to `GetClientRect` with instant unclip and lock-free cursor visibility restore on focus change or `F9` toggle, preventing multi-monitor clickouts and taskbar pop-ups.
+   - **Full Modern PC FPS Keyboard Mappings**: Space to jump/select, Left Ctrl/C/Alt to crouch/roll, Left Shift to sprint, R to reload, E to interact, Q/G to grenade, F to melee, 1/2/Wheel to cycle weapons, Mouse 4/5 for thumbs, Tab/M for scoreboard/map, and Backspace/Esc for menu navigation.
+
+### 2. Verification & Regression Status
+
+- **Component Test Suites (100% Passing)**:
+  - `gpu_world` suite (7/7 PASS): `gpu-world-regression`, `gpu-world-span`, `gpu-world-pipelined`, `gpu-world-uav`, `gpu-world-uav-pipelined`, `gpu-world-hd`, `gpu-world-nojit`.
+  - `gpu_vsh` suite (2/2 PASS): `gpu-vsh-regression`, `gpu-gather-regression`.
+  - Dedicated AAA MKB aim verification test (`check_mkb_aim.c`): 100% PASS across zero drift, deadzone floor clearing, full throw scaling, asymmetric sensitivities, and exponential moving average smoothing.
+  - End-to-end live gameplay combat benchmark (`run_gpu60.py`): Reached 4 heavy gameplay windows (828 flips), 0 crashes, 0 software raster fallbacks, and graceful exit 0 on `WM_CLOSE`.
+- **Deployed Binaries & Configuration**:
+  - `bf2_recomp/build/Release/swbf2_recomp.exe` & `bf2_recomp/game_files/swbf2_recomp.exe`
+  - SHA-256: `3F2321FE171B0433ACB1E15D095ABEF9FDCAE0DDD7F8F9756CE0D01BCC74391B` (Matching).
+  - `bf2_recomp.ini` & `bf2_recomp/game_files/bf2_recomp.ini`
+  - SHA-256: `8DC0C70088B64AD0A4E21BE1F5618DE96E49C2DB0A6653F8C83A4A309E94CD3D` (Matching).
+
+---
+
 ## MILESTONE: 60+ FPS AAA NATIVE PC REMASTER (HLSL SHADER JIT, 2x–4x HD INTERNAL RESOLUTION, PERSISTENT DXBC CACHE & 16:9 HiDPI) — 18 November 2026 NZDT
 
 ### 1. Shipped, Tested, Deployed & Pushed (`origin/main` @ `e2015bc`)

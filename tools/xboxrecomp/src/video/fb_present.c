@@ -563,6 +563,10 @@ static DWORD WINAPI fb_thread(LPVOID unused)
                 aspect = 16.0 / 9.0;
             else if (!strcmp(aspect_env, "16:10") || !strcmp(aspect_env, "16/10"))
                 aspect = 16.0 / 10.0;
+            else if (!strcmp(aspect_env, "21:9") || !strcmp(aspect_env, "21/9") || !strcmp(aspect_env, "ultrawide"))
+                aspect = 21.0 / 9.0;
+            else if (!strcmp(aspect_env, "32:9") || !strcmp(aspect_env, "32/9") || !strcmp(aspect_env, "superultrawide"))
+                aspect = 32.0 / 9.0;
             else if (!strcmp(aspect_env, "4:3") || !strcmp(aspect_env, "4/3"))
                 aspect = 4.0 / 3.0;
         }

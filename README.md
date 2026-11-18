@@ -26,23 +26,35 @@ already set. See `HANDOFF.md` for exact builds and recorded results.
 
 ### Controls
 
-An XInput controller uses the game's original controls. With the game window
-focused, the default keyboard mapping is:
+An XInput controller uses the game's original controls. When using native PC Mouse and Keyboard (`mouse_input=1` in `bf2_recomp.ini`), controls follow standard PC FPS conventions with 1:1 raw mouse look and automatic cursor confinement:
 
-| Keyboard | Xbox control |
-| --- | --- |
-| Enter | Start / pause |
-| Arrow keys | D-pad / menu navigation |
-| Z / X / C / V | A / B / X / Y |
-| WASD | Left stick / movement |
-| IJKL | Right stick / aim |
-| 1 / 3 | Left / right trigger |
-| Q / E | White / black button |
-| Shift / Ctrl | Left / right stick click |
-| Alt+Enter | Toggle fullscreen |
-
-Menus display the original controller button labels: **A means Z**, and
-**X Done means C** with this keyboard layout.
+| Mouse / Keyboard | In-Game Action | Xbox Control Equivalent |
+| --- | --- | --- |
+| **Mouse Move** | Look / Aim (1:1 Raw Input) | Right stick |
+| **Left Click** | Primary Fire | Right Trigger |
+| **Right Click** | Secondary Fire / Zoom (ADS) | Left Trigger |
+| **Middle Click / Wheel** | Cycle Weapon | Y Button |
+| **Mouse 4 (Thumb 1)** | Throw Grenade | White Button |
+| **Mouse 5 (Thumb 2)** | Melee / Secondary Attack | Black Button |
+| **W / A / S / D** | Movement | Left Stick |
+| **Space** | Jump / Menu Select | A Button |
+| **Left Ctrl / C / Alt** | Crouch / Combat Roll | B Button |
+| **Left Shift** | Sprint | Left Stick Click |
+| **R** | Reload Weapon | X Button |
+| **E** | Enter Vehicle / Action / Interact | X Button |
+| **Q / G** | Grenade | White Button |
+| **F** | Melee / Secondary Weapon | Black Button |
+| **1 / 2** | Primary / Secondary Weapon | Y Button |
+| **3 / 4** | Special / Ability Equipment | White / Black Button |
+| **V** | Toggle 1st / 3rd Person View | Right Stick Click |
+| **Tab / M** | Scoreboard / Map & Command Posts | Back Button |
+| **Esc / Enter** | Pause / Menu | Start Button |
+| **Backspace / X** | Cancel / Menu Back | B Button |
+| **Z** | Menu Select | A Button |
+| **Arrow keys** | D-pad navigation | D-pad |
+| **F9** | Toggle Mouse Capture & Release | — |
+| **F12** | Save In-Game Screenshot (`screenshots/`) | — |
+| **Alt+Enter** | Toggle Borderless Fullscreen | — |
 
 Optional frame pacing has been checked through menus, Coruscant movement,
 firing and return to the main menu. It keeps menus near 60 FPS and follows

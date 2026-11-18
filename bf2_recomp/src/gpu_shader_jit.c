@@ -240,7 +240,7 @@ static const char *VSH_PREAMBLE =
 "}\n"
 "static float4 vsh_log(float x) {\n"
 "    float ax = abs(x);\n"
-"    if (ax == 0.0) return float4(-1.0 / 0.0, 1.0, -1.0 / 0.0, 1.0);\n"
+"    if (ax == 0.0) return float4(-asfloat(0x7F800000u), 1.0, -asfloat(0x7F800000u), 1.0);\n"
 "    float e = floor(log2(ax));\n"
 "    return float4(e, ax / exp2(e), log2(ax), 1.0);\n"
 "}\n"

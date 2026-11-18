@@ -226,7 +226,7 @@ static float4 run_ilu(uint op, float4 c)
     case 6: {                                                   /* log */
         float ax = abs(x);
         if (ax == 0.0)
-            return float4(-1.0 / 0.0, 1.0, -1.0 / 0.0, 1.0);
+            return float4(-asfloat(0x7F800000u), 1.0, -asfloat(0x7F800000u), 1.0);
         float e = floor(log2(ax));
         return float4(e, ax / exp2(e), log2(ax), 1.0);
     }

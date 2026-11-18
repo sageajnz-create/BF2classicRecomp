@@ -27116,6 +27116,13 @@ void sub_0041EFE6(void)
     int _cf = 0; /* carry flag */
 
 loc_0041EFE6: ;
+    if (ecx < 0x00010000u || (ecx >= 0x04000000u && ecx < 0x80000000u) || ecx >= 0x84000000u) {
+        eax = 0x88780032u; /* DSERR_ALLOCATED */
+        g_eax = eax;
+        esp += 8; /* ret 4 */
+        g_esp = esp;
+        return;
+    }
     PUSH32(esp, ebp);
     ebp = esp;
     g_ebp = ebp; /* publish frame for frameless callees */
@@ -27157,6 +27164,8 @@ loc_0041F018: ;
     POP32(esp, ebx);
 
 loc_0041F01E: ;
+    if (edx < 0x00010000u || (edx >= 0x04000000u && edx < 0x80000000u) || edx >= 0x84000000u)
+        goto loc_0041F05A;
     edi = ZX8(MEM8(ecx + 0x64));
     eax = MEM32(edx);
     _fa = (uint32_t)(edi) & 0xFFFFFFFFu; _fb = (uint32_t)(eax) & 0xFFFFFFFFu;

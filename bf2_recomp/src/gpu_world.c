@@ -2470,12 +2470,17 @@ static int draw_world(const Nv2aWorldDraw *draw)
             memcpy(world.bound_cube_views, cube_views, sizeof cube_views);
             memcpy(world.bound_samplers, samplers, sizeof samplers);
         }
-    } else if (uav_used) {
+    } else {
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
-        info.visibility_slot = uav_slot;
-        update_cbuffer(world.constants[1], &info, sizeof info);
-        world.last_draw = info;
+        info.visibility_slot = uav_used ? uav_slot : 0;
+        if (uav_used || !world.have_constants ||
+            world.last_draw.half_dim[0] != info.half_dim[0] ||
+            world.last_draw.half_dim[1] != info.half_dim[1]) {
+            update_cbuffer(world.constants[1], &info, sizeof info);
+            world.last_draw = info;
+            world.have_constants = 1;
+        }
     }
     {
         ID3D11PixelShader *want = NULL;
@@ -2494,6 +2499,10 @@ static int draw_world(const Nv2aWorldDraw *draw)
     if (uav_used && !world.uav_bound) {
         ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(world.context, D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL, 1, 1, &world.vis_uav, NULL);
         world.uav_bound = 1;
+    } else if (!uav_used && world.uav_bound) {
+        ID3D11UnorderedAccessView *empty_uav = NULL;
+        ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(world.context, D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL, 1, 1, &empty_uav, NULL);
+        world.uav_bound = 0;
     }
     if (world.bound_depth_state != depth_state
         || world.bound_stencil_ref != (s->stencil_ref & 0xff)) {
@@ -2893,12 +2902,17 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
             memcpy(world.bound_cube_views, cube_views, sizeof cube_views);
             memcpy(world.bound_samplers, samplers, sizeof samplers);
         }
-    } else if (uav_used) {
+    } else {
         info.half_dim[0] = (color->width ? color->width : WIDTH) * 0.5f;
         info.half_dim[1] = (color->height ? color->height : HEIGHT) * 0.5f;
-        info.visibility_slot = uav_slot;
-        update_cbuffer(world.constants[1], &info, sizeof info);
-        world.last_draw = info;
+        info.visibility_slot = uav_used ? uav_slot : 0;
+        if (uav_used || !world.have_constants ||
+            world.last_draw.half_dim[0] != info.half_dim[0] ||
+            world.last_draw.half_dim[1] != info.half_dim[1]) {
+            update_cbuffer(world.constants[1], &info, sizeof info);
+            world.last_draw = info;
+            world.have_constants = 1;
+        }
     }
     {
         ID3D11PixelShader *want = NULL;
@@ -2917,6 +2931,10 @@ static int draw_world_program(const Nv2aWorldDrawProgram *draw)
     if (uav_used && !world.uav_bound) {
         ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(world.context, D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL, 1, 1, &world.vis_uav, NULL);
         world.uav_bound = 1;
+    } else if (!uav_used && world.uav_bound) {
+        ID3D11UnorderedAccessView *empty_uav = NULL;
+        ID3D11DeviceContext_OMSetRenderTargetsAndUnorderedAccessViews(world.context, D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, NULL, NULL, 1, 1, &empty_uav, NULL);
+        world.uav_bound = 0;
     }
     if (world.bound_depth_state != depth_state
         || world.bound_stencil_ref != (s->stencil_ref & 0xff)) {
@@ -3595,6 +3613,10 @@ static int present_world(const void *target, uint32_t pitch)
             aspect = 4.0f / 3.0f;
         else if (!strcmp(aspect_env, "16:10") || !strcmp(aspect_env, "16/10"))
             aspect = 16.0f / 10.0f;
+        else if (!strcmp(aspect_env, "21:9") || !strcmp(aspect_env, "21/9") || !strcmp(aspect_env, "ultrawide"))
+            aspect = 21.0f / 9.0f;
+        else if (!strcmp(aspect_env, "32:9") || !strcmp(aspect_env, "32/9") || !strcmp(aspect_env, "superultrawide"))
+            aspect = 32.0f / 9.0f;
         else if (!strcmp(aspect_env, "stretch") || !strcmp(aspect_env, "fill"))
             aspect = (float)world.swapchain_w / (float)world.swapchain_h;
     }

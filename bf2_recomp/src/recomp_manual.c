@@ -47,7 +47,7 @@ extern void sub_0041EFE6(void);
  * DSERR_ALLOCATED (0x88780032) instead of dereferencing uninitialized contiguous memory. */
 static void sub_0041EFE6_hook(void)
 {
-    if (g_ecx == 0x80000000u || g_ecx < 0x00010000u) {
+    if (g_ecx < 0x00010000u || (g_ecx >= 0x04000000u && g_ecx < 0x80000000u) || g_ecx >= 0x84000000u) {
         static RECOMP_TLS int logged;
         if (!logged) {
             logged = 1;

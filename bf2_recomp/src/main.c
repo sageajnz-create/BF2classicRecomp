@@ -226,18 +226,7 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
     if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
         uintptr_t fault_addr = ep->ExceptionRecord->ExceptionInformation[1];
 
-        /*
-         * GPU register probe at 0xFD000000 range.
-         * Some games probe NV2A registers directly. On real hardware this
-         * returns GPU state; here we just skip the instruction.
-         * TODO: Implement mini x86-64 decoder for instruction skipping,
-         * or connect to the xbox_nv2a library for proper handling.
-         */
-        if (fault_addr >= 0xFD000000 && fault_addr < 0xFE000000) {
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-
-        /* Trapped hardware registers (APU, USB OHCI) -> their models.
+        /* Trapped hardware registers (APU, USB OHCI, NV2A MMIO) -> their models.
          *
          * The other half of RECOMP_AC97_READY: reporting the codec ready is
          * what lets DirectSoundCreate past its first gate, and from there it
@@ -246,6 +235,9 @@ static LONG CALLBACK veh_handler(PEXCEPTION_POINTERS ep)
          * over, so execution resumes instead of unwinding. */
         if (xbox_VehMmioFault(ep))
             return EXCEPTION_CONTINUE_EXECUTION;
+
+        /* Unhandled GPU register probe at 0xFD000000 range falls through to
+         * diagnostic reporting below if xbox_VehMmioFault declined it. */
 
         fprintf(stderr, "[CRASH] Access violation at RIP=0x%llX, fault addr=0x%llX (%s)\n",
             (unsigned long long)ep->ContextRecord->Rip,
@@ -350,9 +342,13 @@ static void load_recomp_ini(void)
             else if (!_stricmp(k, "show_fps")) set_env_if_unset("RECOMP_SHOW_FPS", v);
             else if (!_stricmp(k, "mouse_input")) set_env_if_unset("RECOMP_MKB", v);
             else if (!_stricmp(k, "mouse_sens")) set_env_if_unset("RECOMP_MKB_SENS", v);
+            else if (!_stricmp(k, "mouse_sens_x")) set_env_if_unset("RECOMP_MKB_SENS_X", v);
+            else if (!_stricmp(k, "mouse_sens_y")) set_env_if_unset("RECOMP_MKB_SENS_Y", v);
+            else if (!_stricmp(k, "mouse_smoothing")) set_env_if_unset("RECOMP_MKB_SMOOTH", v);
             else if (!_stricmp(k, "mouse_acc")) set_env_if_unset("RECOMP_MKB_ACC", v);
             else if (!_stricmp(k, "mouse_invert_y")) set_env_if_unset("RECOMP_MKB_INVERT_Y", v);
             else if (!_stricmp(k, "deadzone")) { set_env_if_unset("RECOMP_MKB_DZ", v); set_env_if_unset("RECOMP_MKB_DEADZONE", v); }
+            else if (!_stricmp(k, "mouse_full")) set_env_if_unset("RECOMP_MKB_FULL", v);
             else if (!_stricmp(k, "dispatch_gate")) set_env_if_unset("RECOMP_DISPATCH_GATE", v);
             else if (!_stricmp(k, "save_dir")) set_env_if_unset("RECOMP_SAVE_DIR", v);
             else if (!_strnicmp(k, "RECOMP_", 7)) set_env_if_unset(k, v);
@@ -409,8 +405,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     if (!getenv("RECOMP_D3D11_RESOLVE")) _putenv_s("RECOMP_D3D11_RESOLVE", "snapshot");
     if (!getenv("RECOMP_GPU_VSH")) _putenv_s("RECOMP_GPU_VSH", "1");
     if (!getenv("RECOMP_VISIBILITY_UAV")) _putenv_s("RECOMP_VISIBILITY_UAV", "1");
-    if (!getenv("RECOMP_PIPELINED_QUERY")) _putenv_s("RECOMP_PIPELINED_QUERY", "1");
-    if (!getenv("RECOMP_PB_KICK_ACK")) _putenv_s("RECOMP_PB_KICK_ACK", "1");
+    if (!getenv("RECOMP_VISIBILITY_SPAN")) _putenv_s("RECOMP_VISIBILITY_SPAN", "1");
+    if (!getenv("RECOMP_PIPELINED_QUERY")) _putenv_s("RECOMP_PIPELINED_QUERY", "0");
+    if (!getenv("RECOMP_PB_KICK_ACK")) _putenv_s("RECOMP_PB_KICK_ACK", "0");
     if (!getenv("RECOMP_DEFER_SEGMENT_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEGMENT_QUERY_FLUSH", "1");
     if (!getenv("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH")) _putenv_s("RECOMP_DEFER_SEMAPHORE_QUERY_FLUSH", "1");
     if (!getenv("RECOMP_DISPATCH_GATE")) _putenv_s("RECOMP_DISPATCH_GATE", "1");
