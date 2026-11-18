@@ -11,6 +11,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             config_manager::get_game_config,
             config_manager::save_game_config,
+            process_runner::launch_game,
+            process_runner::is_game_running,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
