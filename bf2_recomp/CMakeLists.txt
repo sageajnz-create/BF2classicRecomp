@@ -25,6 +25,7 @@ file(GLOB RECOMP_GEN_SOURCES CONFIGURE_DEPENDS "src/recomp/gen/*.c")
 
 set(GAME_SOURCES
     src/main.c
+    src/cmdline_parser.c
     src/recomp_manual.c
     src/gpu_resolve.c
     src/gpu_shader_jit.c

@@ -45,6 +45,7 @@
 #include "gpu_world.h"
 #include "host_profile.h"
 #include "ohci.h"
+#include "cmdline_parser.h"
 
 /*
  * If xboxrecomp.h is not an umbrella header in your setup, include
@@ -367,8 +368,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 
     (void)hInstance;
     (void)hPrevInstance;
-    (void)lpCmdLine;
     (void)nCmdShow;
+
+    /* Parse command-line parameters (e.g. -connect <ip>:<port>, -res <scale>, -fullscreen) */
+    if (lpCmdLine && lpCmdLine[0]) {
+        parse_recomp_cmdline(lpCmdLine);
+    }
 
     /* Enable Per-Monitor-V2 DPI awareness so Windows scaling never blurs D3D11 output */
     {
