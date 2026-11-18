@@ -596,6 +596,9 @@ static DWORD WINAPI fb_thread(LPVOID unused)
         return 0;
     }
     s_hwnd = hwnd;
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
     hdc = GetDC(hwnd);
     {
         const char *fs = getenv("RECOMP_FULLSCREEN");

@@ -131,8 +131,35 @@ pub fn launch_game(options: LaunchOptions, app: tauri::AppHandle) -> Result<u32,
 
     // Spawn supervisor thread to monitor child process exit
     std::thread::spawn(move || {
+        // Asynchronously drain stdout and stderr in background threads to prevent OS pipe buffer deadlock!
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+
+        let stdout_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(ref mut stream) = stdout_pipe {
+                let _ = stream.read_to_end(&mut buf);
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        });
+
+        let stderr_handle = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(ref mut stream) = stderr_pipe {
+                let _ = stream.read_to_end(&mut buf);
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        });
+
         let status = child.wait();
         IS_RUNNING.store(false, Ordering::SeqCst);
+
+        let stdout_str = stdout_handle.join().unwrap_or_default();
+        let stderr_str = stderr_handle.join().unwrap_or_default();
+
+        // Persist stdout and stderr logs to game directory
+        let _ = fs::write(game_dir.join("stdout.txt"), &stdout_str);
+        let _ = fs::write(game_dir.join("stderr.txt"), &stderr_str);
 
         let code = match status {
             Ok(s) => s.code().unwrap_or(-1),
@@ -141,12 +168,6 @@ pub fn launch_game(options: LaunchOptions, app: tauri::AppHandle) -> Result<u32,
 
         let mut crash_log = None;
         if code != 0 {
-            // Read tail of stderr if available
-            let mut stderr_str = String::new();
-            if let Some(mut err_stream) = child.stderr.take() {
-                let _ = err_stream.read_to_string(&mut stderr_str);
-            }
-
             // Also check xbox_kernel.log in game directory
             let kernel_log_path = game_dir.join("xbox_kernel.log");
             let mut log_tail = String::new();
@@ -156,7 +177,11 @@ pub fn launch_game(options: LaunchOptions, app: tauri::AppHandle) -> Result<u32,
                 log_tail = lines[start..].join("\n");
             }
 
-            let combined = format!("Process exited with code {}\nSTDERR:\n{}\n\nXBOX KERNEL LOG TAIL:\n{}", code, stderr_str, log_tail);
+            let stderr_lines: Vec<&str> = stderr_str.lines().collect();
+            let err_start = if stderr_lines.len() > 30 { stderr_lines.len() - 30 } else { 0 };
+            let stderr_tail = stderr_lines[err_start..].join("\n");
+
+            let combined = format!("Process exited with code {}\nSTDERR TAIL:\n{}\n\nXBOX KERNEL LOG TAIL:\n{}", code, stderr_tail, log_tail);
             crash_log = Some(combined);
         }
 
