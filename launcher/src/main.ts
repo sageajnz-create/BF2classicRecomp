@@ -12,12 +12,10 @@ const tabs: Record<string, () => Promise<{ default: TabController }>> = {
   settings: () => import("./components/SettingsTab.ts"),
 };
 
-let activeTabKey = "play";
 let currentTabController: TabController | null = null;
 
 async function switchTab(tabKey: string) {
   if (!tabs[tabKey]) return;
-  activeTabKey = tabKey;
 
   // Update nav buttons
   document.querySelectorAll(".nav-btn").forEach((btn) => {
