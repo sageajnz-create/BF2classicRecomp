@@ -1,0 +1,1 @@
+// Configuration Manager module stub

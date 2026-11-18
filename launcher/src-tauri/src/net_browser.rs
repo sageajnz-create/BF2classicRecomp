@@ -1,0 +1,1 @@
+// Net Browser module stub

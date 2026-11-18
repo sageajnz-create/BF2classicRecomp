@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SWBF2 Recomp Hub</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body class="bg-recomp-dark text-recomp-textLight select-none font-sans overflow-hidden">
+    <div id="app" class="h-screen w-screen flex flex-col">
+      <!-- Title Bar & Navigation -->
+      <header class="flex items-center justify-between border-b border-recomp-border px-6 py-3 bg-recomp-panel/80 backdrop-blur">
+        <div class="flex items-center space-x-3">
+          <div class="h-4 w-4 rounded-full bg-recomp-accent shadow-[0_0_8px_#38bdf8]"></div>
+          <div>
+            <h1 class="text-sm font-bold tracking-widest uppercase font-mono text-recomp-textLight">Battlefront II <span class="text-recomp-accent">Recomp</span></h1>
+            <p class="text-[10px] text-recomp-textMuted font-mono">CROSS-PLATFORM DESKTOP HUB v1.0.0</p>
+          </div>
+        </div>
+        <nav class="flex items-center space-x-1 font-mono text-xs" id="nav-tabs">
+          <button class="nav-btn px-4 py-1.5 rounded transition text-recomp-accent bg-recomp-border/40 font-semibold" data-tab="play">PLAY</button>
+          <button class="nav-btn px-4 py-1.5 rounded transition text-recomp-textMuted hover:text-recomp-textLight" data-tab="servers">SERVERS</button>
+          <button class="nav-btn px-4 py-1.5 rounded transition text-recomp-textMuted hover:text-recomp-textLight" data-tab="mods">MODS</button>
+          <button class="nav-btn px-4 py-1.5 rounded transition text-recomp-textMuted hover:text-recomp-textLight" data-tab="settings">SETTINGS</button>
+        </nav>
+      </header>
+
+      <!-- Main Dynamic Content Container -->
+      <main id="tab-content" class="flex-1 overflow-auto p-6 flex flex-col"></main>
+
+      <!-- Footer Telemetry -->
+      <footer class="border-t border-recomp-border px-6 py-2 bg-recomp-panel/60 flex items-center justify-between text-[11px] font-mono text-recomp-textMuted">
+        <div class="flex items-center space-x-4">
+          <span id="footer-status" class="flex items-center space-x-1.5">
+            <span class="inline-block h-2 w-2 rounded-full bg-emerald-400"></span>
+            <span>READY</span>
+          </span>
+          <span id="footer-ver">TARGET: swbf2_recomp (x86_64)</span>
+        </div>
+        <div id="footer-res-summary" class="text-recomp-textMuted">
+          INTERNAL: 1280x960 (2x HD) | ASPECT: 16:9
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
