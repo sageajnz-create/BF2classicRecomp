@@ -8,6 +8,10 @@ pub mod archive_extractor;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            config_manager::get_game_config,
+            config_manager::save_game_config,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
