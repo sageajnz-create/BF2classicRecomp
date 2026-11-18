@@ -15,6 +15,7 @@ pub fn run() {
             process_runner::is_game_running,
             mod_scanner::list_mods,
             mod_scanner::toggle_mod_state,
+            archive_extractor::install_mod_archive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
