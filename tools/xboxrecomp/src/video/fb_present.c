@@ -46,6 +46,16 @@
 
 extern ptrdiff_t xbox_GetMemoryOffset(void);
 
+extern bool overlay_is_open(void);
+extern void overlay_set_open(bool open);
+extern void overlay_toggle(void);
+extern void overlay_set_mouse_pos(int mouse_x, int mouse_y);
+extern void overlay_on_mouse_click(int mouse_x, int mouse_y, bool down);
+extern void overlay_navigate(int delta_row);
+extern void overlay_adjust_value(int delta);
+extern void overlay_activate(void);
+extern void overlay_next_tab(void);
+
 static volatile LONG s_fb_running;
 static uint32_t      s_fb_va, s_fb_pitch, s_fb_width = 640, s_fb_height = 480;
 static uint32_t     *s_rgb;           /* converted 32-bit copy for GDI */
@@ -333,8 +343,28 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
         }
         return 0;
 
+    case WM_MOUSEMOVE:
+        if (overlay_is_open()) {
+            overlay_set_mouse_pos((short)LOWORD(l), (short)HIWORD(l));
+        }
+        break;
+
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if (m == WM_KEYDOWN && (w == VK_F1 || w == VK_HOME) && !(l & (1L << 30))) {
+            overlay_toggle();
+            return 0;
+        }
+        if (overlay_is_open() && m == WM_KEYDOWN) {
+            if (w == VK_UP)     { overlay_navigate(-1); return 0; }
+            if (w == VK_DOWN)   { overlay_navigate(1); return 0; }
+            if (w == VK_LEFT)   { overlay_adjust_value(-1); return 0; }
+            if (w == VK_RIGHT)  { overlay_adjust_value(1); return 0; }
+            if (w == VK_RETURN || w == VK_SPACE) { overlay_activate(); return 0; }
+            if (w == VK_TAB)    { overlay_next_tab(); return 0; }
+            if (w == VK_ESCAPE) { overlay_set_open(false); return 0; }
+            return 0;
+        }
         if (m == WM_KEYDOWN && w == VK_F12 && !(l & (1L << 30))) {
             InterlockedExchange(&s_screenshot_req, 1);
             return 0;
@@ -386,6 +416,11 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
      * Capturing the mouse while one is down delivers its release even
      * outside the window. */
     case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+        if (overlay_is_open()) {
+            overlay_on_mouse_click((short)LOWORD(l), (short)HIWORD(l), m == WM_LBUTTONDOWN);
+            return 0;
+        }
+        /* fallthrough */
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_XBUTTONDOWN: case WM_XBUTTONUP:

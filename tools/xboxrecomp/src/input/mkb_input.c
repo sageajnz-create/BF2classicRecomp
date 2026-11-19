@@ -39,6 +39,8 @@
 #include <string.h>
 #include <math.h>
 
+extern int overlay_is_open(void);
+
 /* ---- configuration ----------------------------------------------------- */
 
 typedef struct {
@@ -417,6 +419,15 @@ int mkb_merge(DWORD dwPort, XBOX_INPUT_STATE *pState)
     /* Foreground gate: while the user is elsewhere the mouse belongs to
      * whoever has it, and the game should read a pad at rest. */
     if (!game_is_foreground()) {
+        mkb_manage_cursor(0);
+        InterlockedExchange(&s_dx, 0);
+        InterlockedExchange(&s_dy, 0);
+        InterlockedExchange(&s_mouse_btn, 0);
+        return 0;
+    }
+
+    /* Overlay gate: when in-game overlay menu is active, free cursor and mute input */
+    if (overlay_is_open()) {
         mkb_manage_cursor(0);
         InterlockedExchange(&s_dx, 0);
         InterlockedExchange(&s_dy, 0);
