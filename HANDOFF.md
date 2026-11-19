@@ -1,8 +1,46 @@
 # Star Wars Battlefront II native port handoff
 
-Checkpoint from 18 November 2026 NZDT. The goal is a fully playable and modern native Windows port of the user's original Xbox copy. Use the existing build tree and extracted files.
+Checkpoint from 19 November 2026 NZDT. The goal is a fully playable and modern native Windows port of the user's original Xbox copy. Use the existing build tree and extracted files.
 
 > **HOST RULE (CRITICAL):** Never touch, modify, or query Windows host audio settings or audio devices under any circumstances. Keep copyrighted game assets (`*.iso`, `*.xbe`, `game_files/`, `logs/`, `.obj`) out of Git at all times.
+
+## MILESTONE: IN-GAME D3D11 SETTINGS OVERLAY MENU & HYBRID INPUT SYSTEM — 19 November 2026 NZDT
+
+### 1. Key Engineering Accomplishments
+
+1. **Native D3D11 In-Game Settings Overlay (`overlay_menu.c`, `overlay_menu.h`, `overlay_draw.c`, `overlay_draw.h`, `overlay_font.h`, `overlay_config.c`, `overlay_config.h`):**
+   - **Direct Presentation Integration**: Hooked `overlay_render()` into `present_world()` in `bf2_recomp/src/gpu_world.c` immediately following the scene quad draw and preceding `IDXGISwapChain_Present()`.
+   - **Zero C++ Footprint**: Entire system implemented in pure C11 (`set(CMAKE_C_STANDARD 11)`) with zero third-party GUI dependencies.
+   - **Embedded Font Atlas & Geometry Batcher**: Integrated 8x12 monospace font (ASCII 32..126) packed into a 128x128 luminance atlas with solid white pixel reservation at (0, 0) for drawing solid colored rectangles with a single pipeline state.
+   - **Holographic Star Wars HUD Aesthetic**: Translucent slate backdrop (`#0B0E14`), `#38BDF8` neon blue borders, active tab highlights, interactive sliders, and toggle switches.
+   - **Three Dedicated Tabs**:
+     - **[ DISPLAY ]**: Internal 3D Resolution Scale (1x–4x HD), Aspect Ratio Viewport (16:9, 4:3, 21:9, 32:9), VSync, Target FPS Limiter (0/Uncapped, 60, 120, 144, 240), and AMD FidelityFX CAS Sharpness.
+     - **[ CONTROLS ]**: Mouse Sensitivity, Independent X/Y Sensitivity, Stick Deadzone compensation, EMA input smoothing, and Invert Vertical Aim Axis.
+     - **[ TELEMETRY ]**: Real-time graphics pipeline and system information.
+
+2. **Win32 Input Arbitration & Cursor Management (`tools/xboxrecomp/src/video/fb_present.c` & `tools/xboxrecomp/src/input/mkb_input.c`):**
+   - **`F1` / `Home` Toggle**: Instantly toggles the overlay open/closed at any point during gameplay or in-engine menus.
+   - **Automatic Cursor Confinement & Visibility**: On open, unclips the cursor (`ClipCursor(NULL)`) and restores hardware cursor visibility (`ShowCursor(TRUE)`). On close, re-clips cursor to client window area and hides cursor for seamless 1:1 mouse aim.
+   - **Gameplay Input Muting**: While the overlay is open, player movement, camera aim, and weapon firing are completely muted in `mkb_poll_gamepad()` so UI clicks never cause accidental combat actions.
+   - **Full Hybrid Navigation**: Supports mouse clicking/dragging, keyboard arrow keys / Enter / Space / Esc / Tab, and gamepad D-pad.
+
+3. **Atomic INI Persistence (`overlay_config.c`):**
+   - Thread-safe parsing and atomic rewrite (`MoveFileExA` with `MOVEFILE_REPLACE_EXISTING`) of `bf2_recomp.ini`, preserving original comments and formatting while updating modified keys.
+   - Synchronizes settings directly with runtime environment variables (`RECOMP_RES_SCALE`, `RECOMP_ASPECT`, `RECOMP_PRESENT_VSYNC`, `RECOMP_MKB_SENS`, etc.).
+
+### 2. Verification & Regression Status
+
+- **Unit Test Suites (100% Passing)**:
+  - `check_overlay_config.c`: 100% PASS (default initialization, round-trip save/load, range clamping, runtime env synchronization).
+  - `check_overlay_draw.c`: 100% PASS (batch memory lifecycle, quad emission, text UV mapping, font atlas generation).
+  - `check_overlay_widgets.c`: 100% PASS (toggle state, tab switching, row navigation, slider adjustments, mouse hit-testing).
+- **Core Component Regression Suites (100% Passing)**:
+  - `gpu_world` suite (7/7 PASS): `gpu-world-regression`, `gpu-world-span`, `gpu-world-pipelined`, `gpu-world-uav`, `gpu-world-uav-pipelined`, `gpu-world-hd`, `gpu-world-nojit`.
+  - `gpu_vsh` suite (2/2 PASS): `gpu-vsh-regression`, `gpu-gather-regression`.
+- **Deployed Binary**:
+  - `bf2_recomp/build/Release/swbf2_recomp.exe` & `bf2_recomp/game_files/swbf2_recomp.exe`
+
+---
 
 ## MILESTONE: AAA NATIVE PC CONTROLS & RENDERER CONSOLIDATION — 18 November 2026 NZDT
 

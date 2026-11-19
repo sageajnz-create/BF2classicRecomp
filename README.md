@@ -52,9 +52,18 @@ An XInput controller uses the game's original controls. When using native PC Mou
 | **Backspace / X** | Cancel / Menu Back | B Button |
 | **Z** | Menu Select | A Button |
 | **Arrow keys** | D-pad navigation | D-pad |
+| **F1 / Home** | Toggle In-Game Settings Overlay (OSD) | — |
 | **F9** | Toggle Mouse Capture & Release | — |
+| **F11 / Alt+Enter** | Toggle Borderless Fullscreen | — |
 | **F12** | Save In-Game Screenshot (`screenshots/`) | — |
-| **Alt+Enter** | Toggle Borderless Fullscreen | — |
+
+### In-Game Settings Overlay
+
+Press **`F1`** or **`Home`** at any point during gameplay or in menus to open the holographic Star Wars settings overlay:
+- **Display & Graphics**: Live adjustment of Internal 3D Resolution Scale (1x, 2x HD, 3x QHD, 4x 4K), Aspect Ratio Viewport (16:9, 4:3, 21:9 Ultrawide, 32:9), VSync, FPS Limit (Uncapped, 60, 120, 144, 240), and AMD FidelityFX CAS Sharpness.
+- **Controls & Aim**: Interactive tuning of Mouse Sensitivity, Horizontal/Vertical sensitivity multipliers, Stick Deadzone compensation curve, EMA smoothing, and Invert Y.
+- **Telemetry**: Real-time pipeline status and system information.
+- **Navigation**: Supports mouse clicking/dragging, keyboard (`Up`/`Down`/`Left`/`Right`/`Enter`/`Tab`/`Esc`), and gamepad D-pad. While open, background weapon firing and camera movement are muted. Clicking **`[ APPLY & SAVE TO INI ]`** (or closing the menu) atomically persists changes to `bf2_recomp.ini`.
 
 Optional frame pacing has been checked through menus, Coruscant movement,
 firing and return to the main menu. It keeps menus near 60 FPS and follows
