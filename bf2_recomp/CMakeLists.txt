@@ -115,3 +115,32 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
     COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
 )
+
+# ============================================================================
+# Overlay Menu Unit Tests
+# ============================================================================
+enable_testing()
+
+add_executable(check_overlay_config
+    tests/check_overlay_config.c
+    src/overlay_config.c
+)
+target_include_directories(check_overlay_config PRIVATE src)
+add_test(NAME check_overlay_config COMMAND check_overlay_config)
+
+add_executable(check_overlay_draw
+    tests/check_overlay_draw.c
+    src/overlay_draw.c
+)
+target_include_directories(check_overlay_draw PRIVATE src)
+add_test(NAME check_overlay_draw COMMAND check_overlay_draw)
+
+add_executable(check_overlay_widgets
+    tests/check_overlay_widgets.c
+    src/overlay_menu.c
+    src/overlay_draw.c
+    src/overlay_config.c
+)
+target_include_directories(check_overlay_widgets PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(check_overlay_widgets PRIVATE d3d11 d3dcompiler dxgi)
+add_test(NAME check_overlay_widgets COMMAND check_overlay_widgets)

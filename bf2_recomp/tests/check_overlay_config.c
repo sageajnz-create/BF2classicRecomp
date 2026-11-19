@@ -5,6 +5,11 @@
 #include <math.h>
 #include "../src/overlay_config.h"
 
+void mkb_apply_live_config(double sens, double sens_x, double sens_y, double dz, int smooth, int invert_y, long full)
+{
+    (void)sens; (void)sens_x; (void)sens_y; (void)dz; (void)smooth; (void)invert_y; (void)full;
+}
+
 int main(void)
 {
     printf("--- Running Overlay Config Unit Tests ---\n");

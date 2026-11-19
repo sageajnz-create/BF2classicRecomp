@@ -424,6 +424,9 @@ static LRESULT CALLBACK fb_wndproc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_RBUTTONDOWN: case WM_RBUTTONUP:
     case WM_MBUTTONDOWN: case WM_MBUTTONUP:
     case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+        if (overlay_is_open()) {
+            return 0;
+        }
         {
             int down = 0;
             int vk = xbox_InputWin32MouseVk(m, (uint32_t)w, &down);

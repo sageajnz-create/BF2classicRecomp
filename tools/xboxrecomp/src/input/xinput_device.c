@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern int overlay_is_open(void);
+
 /* Merge the keyboard on top of a pad on port 0 rather than only standing in
  * for a missing one.
  *
@@ -130,6 +132,11 @@ DWORD xbox_InputGetState(DWORD dwPort, XBOX_INPUT_STATE *pState)
      * aim stick while it is moving, WASD owns movement while held. */
     if (dwPort == 0)
         mkb_merge(dwPort, pState);
+
+    /* When overlay is active, mute all gamepad and keyboard gameplay inputs */
+    if (overlay_is_open()) {
+        memset(&pState->Gamepad, 0, sizeof(pState->Gamepad));
+    }
 
     return ERROR_SUCCESS;
 }

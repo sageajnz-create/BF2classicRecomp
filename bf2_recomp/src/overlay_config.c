@@ -5,6 +5,8 @@
 #include <ctype.h>
 #include <windows.h>
 
+extern void mkb_apply_live_config(double sens, double sens_x, double sens_y, double dz, int smooth, int invert_y, long full);
+
 void overlay_config_defaults(OverlayConfig *cfg)
 {
     if (!cfg) return;
@@ -168,6 +170,30 @@ bool overlay_config_save(const OverlayConfig *cfg, const char *ini_path)
     /* Preserve existing file comments and structure while updating values */
     char line[512];
     char current_section[64] = "";
+    bool seen_graphics = false, seen_controls = false;
+    bool wrote_aspect = false, wrote_res_scale = false, wrote_vsync = false;
+    bool wrote_fps_limit = false, wrote_cas = false, wrote_show_fps = false;
+    bool wrote_sens = false, wrote_sens_x = false, wrote_sens_y = false;
+    bool wrote_deadzone = false, wrote_smoothing = false, wrote_invert_y = false, wrote_full = false;
+
+    #define FLUSH_SECTION_KEYS() do { \
+        if (!strcmp(current_section, "Graphics")) { \
+            if (!wrote_aspect) { fprintf(fout, "aspect=%s\n", cfg->aspect); wrote_aspect = true; } \
+            if (!wrote_res_scale) { fprintf(fout, "res_scale=%d\n", cfg->res_scale); wrote_res_scale = true; } \
+            if (!wrote_vsync) { fprintf(fout, "vsync=%d\n", cfg->vsync); wrote_vsync = true; } \
+            if (!wrote_fps_limit) { fprintf(fout, "fps_limit=%d\n", cfg->fps_limit); wrote_fps_limit = true; } \
+            if (!wrote_cas) { fprintf(fout, "cas=%d\n", cfg->cas); wrote_cas = true; } \
+            if (!wrote_show_fps) { fprintf(fout, "show_fps=%d\n", cfg->show_fps); wrote_show_fps = true; } \
+        } else if (!strcmp(current_section, "Controls")) { \
+            if (!wrote_sens) { fprintf(fout, "mouse_sens=%.2f\n", cfg->mouse_sens); wrote_sens = true; } \
+            if (!wrote_sens_x) { fprintf(fout, "mouse_sens_x=%.2f\n", cfg->mouse_sens_x); wrote_sens_x = true; } \
+            if (!wrote_sens_y) { fprintf(fout, "mouse_sens_y=%.2f\n", cfg->mouse_sens_y); wrote_sens_y = true; } \
+            if (!wrote_deadzone) { fprintf(fout, "deadzone=%.2f\n", cfg->deadzone); wrote_deadzone = true; } \
+            if (!wrote_smoothing) { fprintf(fout, "mouse_smoothing=%d\n", cfg->mouse_smoothing); wrote_smoothing = true; } \
+            if (!wrote_invert_y) { fprintf(fout, "mouse_invert_y=%d\n", cfg->mouse_invert_y); wrote_invert_y = true; } \
+            if (!wrote_full) { fprintf(fout, "mouse_full=%d\n", cfg->mouse_full); wrote_full = true; } \
+        } \
+    } while (0)
 
     while (fgets(line, sizeof(line), fin)) {
         char trimmed[512];
@@ -176,10 +202,13 @@ bool overlay_config_save(const OverlayConfig *cfg, const char *ini_path)
         char *p = trim_whitespace(trimmed);
 
         if (*p == '[' && strchr(p, ']')) {
+            FLUSH_SECTION_KEYS();
             char *close = strchr(p, ']');
             *close = '\0';
             strncpy(current_section, p + 1, sizeof(current_section) - 1);
             current_section[sizeof(current_section) - 1] = '\0';
+            if (!strcmp(current_section, "Graphics")) seen_graphics = true;
+            if (!strcmp(current_section, "Controls")) seen_controls = true;
             fputs(line, fout);
             continue;
         }
@@ -200,34 +229,61 @@ bool overlay_config_save(const OverlayConfig *cfg, const char *ini_path)
 
         if (!strcmp(key, "aspect")) {
             fprintf(fout, "aspect=%s\n", cfg->aspect);
+            wrote_aspect = true;
         } else if (!strcmp(key, "res_scale")) {
             fprintf(fout, "res_scale=%d\n", cfg->res_scale);
+            wrote_res_scale = true;
         } else if (!strcmp(key, "vsync")) {
             fprintf(fout, "vsync=%d\n", cfg->vsync);
+            wrote_vsync = true;
         } else if (!strcmp(key, "fps_limit")) {
             fprintf(fout, "fps_limit=%d\n", cfg->fps_limit);
+            wrote_fps_limit = true;
         } else if (!strcmp(key, "cas")) {
             fprintf(fout, "cas=%d\n", cfg->cas);
+            wrote_cas = true;
         } else if (!strcmp(key, "show_fps")) {
             fprintf(fout, "show_fps=%d\n", cfg->show_fps);
+            wrote_show_fps = true;
         } else if (!strcmp(key, "mouse_sens")) {
             fprintf(fout, "mouse_sens=%.2f\n", cfg->mouse_sens);
+            wrote_sens = true;
         } else if (!strcmp(key, "mouse_sens_x")) {
             fprintf(fout, "mouse_sens_x=%.2f\n", cfg->mouse_sens_x);
+            wrote_sens_x = true;
         } else if (!strcmp(key, "mouse_sens_y")) {
             fprintf(fout, "mouse_sens_y=%.2f\n", cfg->mouse_sens_y);
+            wrote_sens_y = true;
         } else if (!strcmp(key, "deadzone")) {
             fprintf(fout, "deadzone=%.2f\n", cfg->deadzone);
+            wrote_deadzone = true;
         } else if (!strcmp(key, "mouse_smoothing")) {
             fprintf(fout, "mouse_smoothing=%d\n", cfg->mouse_smoothing);
+            wrote_smoothing = true;
         } else if (!strcmp(key, "mouse_invert_y")) {
             fprintf(fout, "mouse_invert_y=%d\n", cfg->mouse_invert_y);
+            wrote_invert_y = true;
         } else if (!strcmp(key, "mouse_full")) {
             fprintf(fout, "mouse_full=%d\n", cfg->mouse_full);
+            wrote_full = true;
         } else {
             fputs(line, fout);
         }
     }
+
+    FLUSH_SECTION_KEYS();
+
+    if (!seen_graphics) {
+        fprintf(fout, "\n[Graphics]\n");
+        strncpy(current_section, "Graphics", sizeof(current_section) - 1);
+        FLUSH_SECTION_KEYS();
+    }
+    if (!seen_controls) {
+        fprintf(fout, "\n[Controls]\n");
+        strncpy(current_section, "Controls", sizeof(current_section) - 1);
+        FLUSH_SECTION_KEYS();
+    }
+    #undef FLUSH_SECTION_KEYS
 
     fclose(fin);
     fclose(fout);
@@ -275,4 +331,8 @@ void overlay_config_apply_to_runtime(const OverlayConfig *cfg)
 
     snprintf(buf, sizeof(buf), "%d", cfg->mouse_full);
     _putenv_s("RECOMP_MKB_FULL", buf);
+
+    /* Update live input tuning in mkb_input engine */
+    mkb_apply_live_config((double)cfg->mouse_sens, (double)cfg->mouse_sens_x, (double)cfg->mouse_sens_y,
+                          (double)cfg->deadzone, cfg->mouse_smoothing, cfg->mouse_invert_y, (long)cfg->mouse_full);
 }

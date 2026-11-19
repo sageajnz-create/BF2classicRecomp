@@ -10,6 +10,8 @@
 #include <d3d11.h>
 #include <d3dcompiler.h>
 
+extern void xbox_InputKeysClear(void);
+
 typedef enum {
     TAB_DISPLAY = 0,
     TAB_CONTROLS = 1,
@@ -42,6 +44,9 @@ static struct {
 
     char                    status_msg[64];
     uint32_t                status_timer;
+
+    uint32_t                screen_w;
+    uint32_t                screen_h;
 
     OverlayBatch            batch;
 } s_overlay = {0};
@@ -88,6 +93,7 @@ void overlay_set_open(bool open)
     if (s_overlay.is_open != open) {
         s_overlay.is_open = open;
         if (open) {
+            xbox_InputKeysClear();
             overlay_config_load(&s_overlay.config, "bf2_recomp.ini");
             s_overlay.dragging_slider = -1;
             s_overlay.status_msg[0] = '\0';
@@ -319,11 +325,13 @@ void overlay_on_mouse_click(int mouse_x, int mouse_y, bool down)
         return;
     }
 
-    /* Modal bounds centered on 1280x720 base */
+    /* Modal bounds dynamically centered on viewport */
+    float sw = s_overlay.screen_w ? (float)s_overlay.screen_w : 1280.0f;
+    float sh = s_overlay.screen_h ? (float)s_overlay.screen_h : 720.0f;
     float mw = 680.0f;
     float mh = 440.0f;
-    float mx = (1280.0f - mw) * 0.5f;
-    float my = (720.0f - mh) * 0.5f;
+    float mx = (sw - mw) * 0.5f;
+    float my = (sh - mh) * 0.5f;
 
     /* Close button [X] at top-right */
     if (point_in_rect(mouse_x, mouse_y, mx + mw - 34.0f, my + 6.0f, 26.0f, 22.0f)) {
@@ -428,6 +436,9 @@ void overlay_render(ID3D11RenderTargetView *backbuffer_rtv, uint32_t screen_w, u
 {
     if (!s_overlay.is_open || !s_overlay.device || !s_overlay.context) return;
     if (!backbuffer_rtv || screen_w == 0 || screen_h == 0) return;
+
+    s_overlay.screen_w = screen_w;
+    s_overlay.screen_h = screen_h;
 
     /* Handle dragging slider update */
     float mw = 680.0f;
@@ -607,22 +618,16 @@ void overlay_render(ID3D11RenderTargetView *backbuffer_rtv, uint32_t screen_w, u
         overlay_draw_text(b, save_btn_x + btn_w + 14.0f, save_btn_y + 9.0f, 1.0f, s_overlay.status_msg, 0xFF10B981);
     }
 
-    /* 4. Mouse Pointer */
-    float cursor_x = (float)s_overlay.mouse_x;
-    float cursor_y = (float)s_overlay.mouse_y;
-    overlay_draw_rect(b, cursor_x, cursor_y, 3.0f, 14.0f, 0xFF38BDF8);
-    overlay_draw_rect(b, cursor_x, cursor_y, 14.0f, 3.0f, 0xFF38BDF8);
-    overlay_draw_rect(b, cursor_x + 3.0f, cursor_y + 3.0f, 7.0f, 7.0f, 0xFFFFFFFF);
-
     /* --- Direct3D 11 Draw Submission --- */
     if (b->count == 0) return;
+    UINT vert_count = b->count > 1024 * 6 ? 1024 * 6 : b->count;
 
     /* Update dynamic vertex buffer */
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr = ID3D11DeviceContext_Map(s_overlay.context, (ID3D11Resource *)s_overlay.vb,
                                          0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     if (SUCCEEDED(hr)) {
-        memcpy(mapped.pData, b->vertices, b->count * sizeof(OverlayVertex));
+        memcpy(mapped.pData, b->vertices, vert_count * sizeof(OverlayVertex));
         ID3D11DeviceContext_Unmap(s_overlay.context, (ID3D11Resource *)s_overlay.vb, 0);
     } else {
         return;
@@ -665,5 +670,5 @@ void overlay_render(ID3D11RenderTargetView *backbuffer_rtv, uint32_t screen_w, u
     ID3D11DeviceContext_OMSetDepthStencilState(s_overlay.context, NULL, 0);
 
     /* Draw full batch */
-    ID3D11DeviceContext_Draw(s_overlay.context, b->count, 0);
+    ID3D11DeviceContext_Draw(s_overlay.context, vert_count, 0);
 }

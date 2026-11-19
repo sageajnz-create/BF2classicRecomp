@@ -38,6 +38,9 @@ extern "C" {
 /* True when the layer is enabled (RECOMP_MKB not "0"). Cheap; cached. */
 int mkb_enabled(void);
 
+/* Dynamically update live mouse tuning parameters */
+void mkb_apply_live_config(double sens, double sens_x, double sens_y, double dz, int smooth, int invert_y, long full);
+
 /*
  * Merge the mouse+keyboard virtual pad on top of *pState, in place.
  * Buttons OR in, analog buttons take the larger value, and the aim

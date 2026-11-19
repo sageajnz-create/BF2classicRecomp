@@ -57,6 +57,17 @@ typedef struct {
 
 static MkbConfig s_cfg = { 1.0, 1.0, 1.0, 0.18, 1.0, 48, 0, 0, 0 };
 
+void mkb_apply_live_config(double sens, double sens_x, double sens_y, double dz, int smooth, int invert_y, long full)
+{
+    if (sens > 0.0 && sens < 100.0) s_cfg.sens = sens;
+    if (sens_x > 0.0 && sens_x < 100.0) s_cfg.sens_x = sens_x;
+    if (sens_y > 0.0 && sens_y < 100.0) s_cfg.sens_y = sens_y;
+    if (dz >= 0.0 && dz < 0.9) s_cfg.dz = dz;
+    s_cfg.smooth = smooth != 0;
+    s_cfg.invert_y = invert_y != 0;
+    if (full > 0 && full < 10000) s_cfg.full = full;
+}
+
 /* One "key=value" line; returns 1 when the key was recognised. */
 static int mkb_apply_kv(const char *key, const char *val)
 {
