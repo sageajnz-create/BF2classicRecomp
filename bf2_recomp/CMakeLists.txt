@@ -31,6 +31,9 @@ set(GAME_SOURCES
     src/gpu_shader_jit.c
     src/gpu_world.c
     src/host_profile.c
+    src/overlay_config.c
+    src/overlay_draw.c
+    src/overlay_menu.c
 )
 
 function(embed_nv2a_shader name source_var)

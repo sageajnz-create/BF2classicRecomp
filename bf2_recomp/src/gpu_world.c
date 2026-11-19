@@ -14,6 +14,7 @@
 #include "gpu_world_shader.h"
 #include "gpu_vsh_shader.h"
 #include "nv2a_world_backend.h"
+#include "overlay_menu.h"
 
 enum {
     WIDTH = NV2A_WORLD_WIDTH, HEIGHT = NV2A_WORLD_HEIGHT,
@@ -3484,6 +3485,8 @@ static int init_swapchain(HWND hwnd)
     if (!create_swapchain_rtvs())
         return 0;
 
+    overlay_init(world.device, world.context);
+
     if (!world.present_vs) {
         const char *cas_env = getenv("RECOMP_CAS");
         int use_cas = (cas_env && *cas_env) ? (cas_env[0] != '0') : 1;
@@ -3652,6 +3655,10 @@ static int present_world(const void *target, uint32_t pitch)
     gt_blit(0);
     ID3D11DeviceContext_Draw(world.context, 3, 0);
     gt_blit(1);
+
+    if (overlay_is_open()) {
+        overlay_render(world.swapchain_rtv, world.swapchain_w, world.swapchain_h);
+    }
 
     const char *v = getenv("RECOMP_PRESENT_VSYNC");
     UINT sync_interval = (v && v[0] == '1') ? 1 : 0;
