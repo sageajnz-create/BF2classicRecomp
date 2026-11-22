@@ -3,6 +3,7 @@
 #include <string.h>
 #include <windows.h>
 #include "gpu_world.h"
+#include "overlay_menu.h"
 #include "nv2a_world_backend.h"
 
 enum { PIXELS = NV2A_WORLD_WIDTH * NV2A_WORLD_HEIGHT, SIDE = 32 };
@@ -14,6 +15,19 @@ HWND xbox_FramebufferWindowGetHwnd(void) { return NULL; }
 void xbox_FramebufferWindowDirectActive(int active) { (void)active; }
 int xbox_FramebufferWindowConsumeScreenshot(void) { return 0; }
 void xbox_FramebufferWindowSetTitleText(const char *title) { (void)title; }
+bool overlay_init(ID3D11Device *device, ID3D11DeviceContext *context)
+{
+    (void)device;
+    (void)context;
+    return false;
+}
+bool overlay_is_open(void) { return false; }
+void overlay_render(ID3D11RenderTargetView *target, uint32_t width, uint32_t height)
+{
+    (void)target;
+    (void)width;
+    (void)height;
+}
 /* The cubemap fixture decodes linear faces from a host buffer standing in for
  * guest memory; desc.offset is relative to decode_base. */
 static const uint8_t *decode_base;

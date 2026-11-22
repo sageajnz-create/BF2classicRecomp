@@ -1,14 +1,13 @@
 #define CINTERFACE
 #define COBJMACROS
 #include <d3d11.h>
-#include <d3dcompiler.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "gpu_resolve.h"
 #include "gpu_combiner.h"
-#include "gpu_resolve_shader.h"
+#include "bf2_resolve_shader.h"
 #include "nv2a_resolve_backend.h"
 
 enum {
@@ -127,7 +126,6 @@ static HRESULT create_buffers(void)
 
 static int init_resolve(void)
 {
-    ID3DBlob *bytecode = NULL, *messages = NULL;
     HRESULT hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
         D3D11_CREATE_DEVICE_SINGLETHREADED, NULL, 0, D3D11_SDK_VERSION,
         &gpu.device, NULL, &gpu.context);
@@ -135,21 +133,8 @@ static int init_resolve(void)
         disable_resolve("device creation", hr);
         return 0;
     }
-    hr = D3DCompile(bf2_resolve_source, sizeof bf2_resolve_source - 1,
-                    "nv2a_resolve.hlsl", NULL, NULL, "main", "cs_5_0",
-                    D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
-                    0, &bytecode, &messages);
-    if (messages) {
-        if (FAILED(hr))
-            fprintf(stderr, "%s\n", (const char *)ID3D10Blob_GetBufferPointer(messages));
-        ID3D10Blob_Release(messages);
-    }
-    if (SUCCEEDED(hr)) {
-        hr = ID3D11Device_CreateComputeShader(gpu.device,
-            ID3D10Blob_GetBufferPointer(bytecode), ID3D10Blob_GetBufferSize(bytecode),
-            NULL, &gpu.shader);
-        ID3D10Blob_Release(bytecode);
-    }
+    hr = ID3D11Device_CreateComputeShader(gpu.device, bf2_resolve_shader,
+                                         sizeof bf2_resolve_shader, NULL, &gpu.shader);
     if (FAILED(hr)) {
         disable_resolve("shader creation", hr);
         return 0;

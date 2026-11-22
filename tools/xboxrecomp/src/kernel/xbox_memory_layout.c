@@ -20,6 +20,7 @@
 #include "guest_vmem.h"
 #include "kernel_missing.h"
 #include "nv2a_flip_hold.h"
+#include "platform/host_time.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1546,7 +1547,6 @@ static DWORD WINAPI nv2a_ack_thread(LPVOID param)
                     extern void nv2a_pb_resync(uint32_t);
                     extern int  nv2a_pb_dma_walk(void);
                     extern void nv2a_pb_scan_segment(uint32_t, uint32_t);
-                    extern uint64_t xbox_HostNowNs(void);
                     pass_start = xbox_HostNowNs();
 
                     if (nv2a_pb_dma_walk()) {

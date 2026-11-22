@@ -36,43 +36,18 @@ set(GAME_SOURCES
     src/overlay_menu.c
 )
 
-function(embed_nv2a_shader name source_var)
-    set(combiner "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_combiner.hlsli")
-    set(shader "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_${name}.hlsl")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${combiner}" "${shader}")
-    file(READ "${combiner}" shared_code)
-    file(READ "${shader}" shader_code)
-    set(source "${shared_code}\n${shader_code}")
-    string(REPLACE "\\" "\\\\" source "${source}")
-    string(REPLACE "\"" "\\\"" source "${source}")
-    string(REPLACE "\r" "" source "${source}")
-    string(REPLACE "\n" "\\n\"\n\"" ${source_var} "${source}")
-    configure_file(src/gpu_${name}_shader.h.in gpu_${name}_shader.h @ONLY)
-    set_property(SOURCE src/gpu_${name}.c APPEND PROPERTY INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}")
-endfunction()
-embed_nv2a_shader(resolve BF2_RESOLVE_SOURCE)
-embed_nv2a_shader(world BF2_WORLD_SOURCE)
-
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_vsh_gpu.hlsl" vsh_code)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_vsh_gather.hlsli" gather_code)
-set(vsh_combined "${vsh_code}\n${gather_code}")
-string(REPLACE "\\" "\\\\" vsh_combined "${vsh_combined}")
-string(REPLACE "\"" "\\\"" vsh_combined "${vsh_combined}")
-string(REPLACE "\r" "" vsh_combined "${vsh_combined}")
-string(REPLACE "\n" "\\n\"\n\"" BF2_VSH_SOURCE "${vsh_combined}")
-configure_file(src/gpu_vsh_shader.h.in gpu_vsh_shader.h @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_vsh_gpu.hlsl"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nv2a_vsh_gather.hlsli")
-
 add_executable(${PROJECT_NAME}
     ${GAME_SOURCES}
     ${RECOMP_GEN_SOURCES}
 )
+include(cmake/RendererShaders.cmake)
+bf2_world_shaders(${PROJECT_NAME})
+bf2_resolve_shader(${PROJECT_NAME})
 
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/recomp/gen
@@ -115,6 +90,12 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
     COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
 )
+
+# Stage a portable runtime for Steam/Proton or the Linux launcher. The user
+# supplies the disc files separately in this same directory.
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini" DESTINATION .)
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../run_swbf2_linux.sh" DESTINATION .)
 
 # ============================================================================
 # Overlay Menu Unit Tests

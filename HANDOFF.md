@@ -4,6 +4,40 @@ Checkpoint from 19 November 2026 NZDT. The goal is a fully playable and modern n
 
 > **HOST RULE (CRITICAL):** Never touch, modify, or query Windows host audio settings or audio devices under any circumstances. Keep copyrighted game assets (`*.iso`, `*.xbe`, `game_files/`, `logs/`, `.obj`) out of Git at all times.
 
+## 22 November 2026 NZDT — Linux compatibility
+
+- The Windows Release build now embeds bytecode for the fixed D3D11 world,
+  vertex gather, visibility, resolve, and fullscreen shaders. Wine 9 rejected
+  the old runtime compilation of the visibility and resolve shaders. On this
+  Wine version, dynamic vertex and pixel shader compilation still falls back
+  to the generic shaders.
+- `cmake --install bf2_recomp/build --config Release --prefix ./out/swbf2-runtime`
+  stages the Windows executable, `bf2_recomp.ini`, and the Linux shell launcher.
+  The README covers Steam Proton on Bazzite and separate umu/Wine prefixes.
+- Ubuntu 24.04 under WSL2 with Wine 9 and DXVK 2.7.1 passed the renderer
+  component fixture on Mesa llvmpipe. An isolated 60 Hz virtual display then
+  reached the title, created and saved a profile, navigated Instant Action,
+  and entered the Coruscant Conquest loading screen at 2× internal resolution.
+  The profile reopened on a second launch. The extended run at 1× with
+  `RECOMP_DIRECT_PRESENT=0`, `RECOMP_D3D_PRESENT=0`, and both shader JITs off
+  reached faction selection, spawned a CIS unit, and verified movement and
+  firing. Ammo decreased from 250 to 248. Closing the window returned exit code
+  0. Software Vulkan delivered roughly
+  1–2 FPS in this scene. See `logs/linux-compat/boot-dxvk-match.log`,
+  `dxvk-spawn.png`, and `dxvk-after-input.png` in that directory.
+- Bare Xvfb triggered an integer divide-by-zero inside DXVK's DXGI DLL during
+  present. An isolated 60 Hz Xorg dummy display allowed the same executable
+  and DXVK version to present.
+- Seven Windows renderer checks passed after rebuilding the fixture. The two
+  GPU vertex checks and three overlay checks also passed. A missing host-clock
+  declaration was fixed in the shared toolkit, which builds on Ubuntu with
+  `XBOXRECOMP_BUILD_D3D8=OFF` and passes its two configured CPU tests. The native
+  POSIX directory fixture also passed.
+- Acceptance still requires a full offline match and return to the menu,
+  audio on a real output device, keyboard and controller checks during combat,
+  and frame-time measurements on a Bazzite GPU. The runtime in the staging
+  directory is a Windows executable intended for Proton/Wine.
+
 ## MILESTONE: IN-GAME D3D11 SETTINGS OVERLAY MENU & HYBRID INPUT SYSTEM — 19 November 2026 NZDT
 
 ### 1. Key Engineering Accomplishments

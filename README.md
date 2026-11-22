@@ -12,17 +12,52 @@ Double-click `run_swbf2.bat` in the root directory, or run it from PowerShell:
 
 The launcher starts the latest build in `bf2_recomp/build/Release/` and uses the existing assets in `bf2_recomp/game_files/`.
 
-For the accelerated hardware renderer, double-click `run_swbf2_hardware.bat`.
-The D3D11 world renderer runs on the GPU with GPU vertex shader processing
-and direct DXGI swapchain presentation. Visual verification now confirms real
-3D frames (tens of thousands of colours) under `RECOMP_GPU_VSH=1`; an earlier
-constant-buffer binding bug had made those frames blank. Full 3D combat runs
-at ~16 FPS with `RECOMP_VISIBILITY_SPAN=1` (enabled by the hardware launcher),
-limited by occlusion queries on AMD D3D11 — the CPU vertex transform is no
-longer the bottleneck. Coruscant match
-completion and round transitions have been verified. The regular launcher
-retains the software renderer unless renderer environment variables are
-already set. See `HANDOFF.md` for exact builds and recorded results.
+The current Windows build enables the accelerated D3D11 renderer by default.
+`run_swbf2_hardware.bat` explicitly selects its hardware profile. Prior Windows
+playtests verified a Coruscant match completion and round transitions. Later
+Windows benchmarks recorded a 64.5 FPS weighted average over 12 combat windows
+at 2× internal resolution, with the heaviest firefights dipping into the
+50–60 FPS range. See `HANDOFF.md` for the tested builds and settings.
+
+### Linux and Bazzite
+
+The Linux launch path uses the x64 Windows build through Proton or Wine. It
+requires the extracted files from your own Xbox copy and a writable game
+directory for settings and saves.
+
+1. On Windows, build the Release target as described below and stage the runtime
+   into a new directory.
+
+   ```powershell
+   cmake --install bf2_recomp/build --config Release --prefix ./out/swbf2-runtime
+   ```
+
+2. Copy the staged directory to the Linux machine. Put the extracted disc files
+   in it so that `default.xbe`, the `Data` and `media` directories, and
+   `swbf2_recomp.exe` are siblings.
+3. On Bazzite, add `swbf2_recomp.exe` as a non-Steam game in Desktop Mode. In the
+   shortcut properties, set **Start In** to the game directory and enable
+   **Force the use of a specific Steam Play compatibility tool** under
+   **Compatibility**. Choose an installed Proton version. The shortcut can also
+   be launched from Gaming Mode. [Bazzite game launcher documentation](https://docs.bazzite.gg/Gaming/Game_Launchers/)
+
+For a terminal launch on other x86-64 distributions, install `umu-run` or
+64-bit Wine and run this from the staged directory.
+
+```sh
+sh ./run_swbf2_linux.sh -windowed
+```
+
+The helper prefers `umu-run` and otherwise uses Wine. Set
+`SWBF2_LINUX_RUNNER=wine` or `SWBF2_LINUX_RUNNER=umu` to choose explicitly.
+Each runner gets its own prefix under `${XDG_DATA_HOME:-$HOME/.local/share}/swbf2-recomp`
+unless `WINEPREFIX` is set. Set `SWBF2_GAME_DIR` if the executable and disc files
+are in a different directory. [umu runner options](https://github.com/Open-Wine-Components/umu-launcher/blob/main/docs/umu.1.scd)
+
+Linux testing under Wine and DXVK covers startup, profile saving and reopening,
+and spawning, movement, and firing in Coruscant Conquest. The combat smoke test
+used a virtual display and software Vulkan at 1× internal resolution. Full
+matches and performance on Bazzite hardware are still pending.
 
 ### Controls
 
@@ -76,9 +111,41 @@ $env:RECOMP_FLIP_PACING = 'edge'
 
 Close that PowerShell session to discard the option, or set it to `0`.
 
+### Live overlay smoke check
+
+Run from the project root on a Windows desktop with CPython, the existing
+Release build, and the extracted `bf2_recomp/game_files/`:
+
+```powershell
+python tools/check_overlay_live.py
+```
+
+The script launches the game twice and sends keyboard messages only to its own
+game window. It checks D3D11 captures for F1 and Home open/close and for keyboard
+navigation to **Controls → Invert Vertical Aim Axis**. It checks the guest-facing
+controller state for Start while Enter is held before opening, while open, and
+after closing. Start must be suppressed while open. The changed setting must be
+written on close and appear as **ON** after relaunch. A failed check returns a
+nonzero exit code.
+
+Each run writes its captures, logs, and test INI under the Git-ignored
+`logs/overlay-smoke/`. The script links the existing build and extracted files
+into that directory for the duration of the run. It uses its own INI and guest
+saves and makes no Windows audio settings queries or changes.
+
+**Manual gameplay acceptance.** Spawn in an offline match and confirm movement,
+mouse look, and firing work. Open the overlay with a physical F1 or Home press.
+Try WASD, move the mouse, and click an overlay control. Verify the soldier stays
+still, the view stays fixed, and the weapon does not fire. Close the overlay and
+verify normal movement, aiming, and firing resume without a camera jump or stuck
+input. Repeat with a controller if one is in scope for the playtest.
+
 ### Rebuild from source
 
-Run from the project root with Visual Studio C++ and CMake installed.
+Run from the project root with Visual Studio C++, CMake, and a Windows SDK
+that includes `fxc.exe`. The build embeds the fixed D3D11 shaders as bytecode.
+If CMake cannot find the SDK's shader compiler, configure with
+`-DBF2_FXC=C:/path/to/fxc.exe`. [Microsoft FXC documentation](https://learn.microsoft.com/en-us/windows/win32/direct3dtools/fxc)
 
 ```powershell
 cmake -S bf2_recomp -B bf2_recomp/build -A x64

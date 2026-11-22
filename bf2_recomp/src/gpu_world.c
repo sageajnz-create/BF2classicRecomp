@@ -2,7 +2,6 @@
 #define COBJMACROS
 #include <d3d11.h>
 #include <dxgi1_5.h>
-#include <d3dcompiler.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +10,16 @@
 #include "gpu_combiner.h"
 #include "gpu_shader_jit.h"
 #include "gpu_world.h"
-#include "gpu_world_shader.h"
-#include "gpu_vsh_shader.h"
+#include "bf2_vertex_main.h"
+#include "bf2_pixel_main.h"
+#include "bf2_pixel_visibility.h"
+#include "bf2_vertex_clear.h"
+#include "bf2_pixel_clear.h"
+#include "bf2_vs_gather_transform_indexed.h"
+#include "bf2_fullscreen_vs.h"
+#include "bf2_blit_ps.h"
+#include "bf2_present_ps.h"
+#include "bf2_cas_ps.h"
 #include "nv2a_world_backend.h"
 #include "overlay_menu.h"
 
@@ -279,44 +286,6 @@ static int check_gpu(HRESULT hr, const char *operation)
     return 0;
 }
 
-static ID3DBlob *compile_source(const char *source, size_t size,
-                                const char *entry, const char *model)
-{
-    ID3DBlob *code = NULL, *errors = NULL;
-    HRESULT hr = D3DCompile(source, size, "nv2a_world.hlsl", NULL, NULL,
-        entry, model, D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3,
-        0, &code, &errors);
-    if (errors) {
-        if (FAILED(hr))
-            fprintf(stderr, "%s\n", (const char *)ID3D10Blob_GetBufferPointer(errors));
-        ID3D10Blob_Release(errors);
-    }
-    return check_gpu(hr, entry) ? code : NULL;
-}
-
-static ID3DBlob *compile(const char *entry, const char *model)
-{
-    return compile_source(bf2_world_source, sizeof bf2_world_source - 1, entry, model);
-}
-
-/* Compile the visibility-counting variant by prefixing the shared shader
- * source with the define (rather than D3DCompile's pDefines, which this
- * toolchain's headers do not pass reliably -- see the fixture failure). */
-static ID3DBlob *compile_uav(void)
-{
-    static const char prefix[] = "#define VISIBILITY_UAV 1\n";
-    size_t n = sizeof prefix - 1 + sizeof bf2_world_source - 1;
-    char *source = (char *)malloc(n + 1);
-    if (!source)
-        return NULL;
-    memcpy(source, prefix, sizeof prefix - 1);
-    memcpy(source + sizeof prefix - 1, bf2_world_source, sizeof bf2_world_source - 1);
-    source[n] = 0;
-    ID3DBlob *result = compile_source(source, n, "pixel_visibility", "ps_5_0");
-    free(source);
-    return result;
-}
-
 /* Query-free visibility: a pixel shader increments a per-draw uint counter in
  * a UAV instead of bracketing every draw with an occlusion query. */
 static int visibility_uav_enabled(void)
@@ -358,20 +327,6 @@ static int visibility_uav_can_handle(const Nv2aRenderState *s)
     }
     s_uav_stats.accepted++;
     return 1;
-}
-
-static ID3DBlob *compile_vsh(const char *entry, const char *model)
-{
-    ID3DBlob *code = NULL, *errors = NULL;
-    HRESULT hr = D3DCompile(bf2_vsh_source, sizeof bf2_vsh_source - 1,
-        "nv2a_vsh_gather.hlsl", NULL, NULL, entry, model,
-        D3DCOMPILE_IEEE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-    if (errors) {
-        if (FAILED(hr))
-            fprintf(stderr, "%s\n", (const char *)ID3D10Blob_GetBufferPointer(errors));
-        ID3D10Blob_Release(errors);
-    }
-    return check_gpu(hr, entry) ? code : NULL;
 }
 
 static int create_surface_texture_sized(DXGI_FORMAT format, UINT bind, uint32_t width, uint32_t height, ID3D11Texture2D **out)
@@ -426,7 +381,6 @@ static int init_world(void)
     D3D11_VIEWPORT viewport = {0, 0, WIDTH, HEIGHT, 0, 1};
     D3D11_BUFFER_DESC buffer = {0};
     D3D11_RASTERIZER_DESC rasterizer = {0};
-    ID3DBlob *code;
     UINT stride = sizeof(Nv2aWorldVertex), offset = 0;
     HRESULT hr;
 
@@ -440,57 +394,31 @@ static int init_world(void)
         if (QueryPerformanceFrequency(&frequency))
             world.frequency = frequency.QuadPart;
     }
-    code = compile("vertex_main", "vs_5_0");
-    if (!code)
-        return 0;
-    hr = ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                              ID3D10Blob_GetBufferSize(code), NULL, &world.vs);
+    hr = ID3D11Device_CreateVertexShader(world.device, bf2_vertex_main,
+                                        sizeof bf2_vertex_main, NULL, &world.vs);
     if (SUCCEEDED(hr))
         hr = ID3D11Device_CreateInputLayout(world.device, format, sizeof format / sizeof *format,
-              ID3D10Blob_GetBufferPointer(code), ID3D10Blob_GetBufferSize(code), &world.layout);
-    ID3D10Blob_Release(code);
+                                            bf2_vertex_main, sizeof bf2_vertex_main, &world.layout);
     if (!check_gpu(hr, "vertex pipeline"))
         return 0;
-    code = compile("pixel_main", "ps_5_0");
-    if (!code)
-        return 0;
-    hr = ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                              ID3D10Blob_GetBufferSize(code), NULL, &world.ps);
-    ID3D10Blob_Release(code);
+    hr = ID3D11Device_CreatePixelShader(world.device, bf2_pixel_main,
+                                       sizeof bf2_pixel_main, NULL, &world.ps);
     if (!check_gpu(hr, "pixel pipeline"))
         return 0;
-    {
-        code = compile_uav();
-        if (!code)
-            return 0;
-        hr = ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                                  ID3D10Blob_GetBufferSize(code), NULL, &world.ps_uav);
-        ID3D10Blob_Release(code);
-        if (!check_gpu(hr, "visibility counting pipeline"))
-            return 0;
-    }
-    code = compile("vertex_clear", "vs_5_0");
-    if (!code)
+    hr = ID3D11Device_CreatePixelShader(world.device, bf2_pixel_visibility,
+                                       sizeof bf2_pixel_visibility, NULL, &world.ps_uav);
+    if (!check_gpu(hr, "visibility counting pipeline"))
         return 0;
-    hr = ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                              ID3D10Blob_GetBufferSize(code), NULL, &world.clear_vs);
-    ID3D10Blob_Release(code);
+    hr = ID3D11Device_CreateVertexShader(world.device, bf2_vertex_clear,
+                                        sizeof bf2_vertex_clear, NULL, &world.clear_vs);
     if (!check_gpu(hr, "clear vertex shader"))
         return 0;
-    code = compile("pixel_clear", "ps_5_0");
-    if (!code)
-        return 0;
-    hr = ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                              ID3D10Blob_GetBufferSize(code), NULL, &world.clear_ps);
-    ID3D10Blob_Release(code);
+    hr = ID3D11Device_CreatePixelShader(world.device, bf2_pixel_clear,
+                                       sizeof bf2_pixel_clear, NULL, &world.clear_ps);
     if (!check_gpu(hr, "clear pixel shader"))
         return 0;
-    code = compile_vsh("vs_gather_transform_indexed", "vs_5_0");
-    if (!code)
-        return 0;
-    hr = ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(code),
-                              ID3D10Blob_GetBufferSize(code), NULL, &world.vsh_gather);
-    ID3D10Blob_Release(code);
+    hr = ID3D11Device_CreateVertexShader(world.device, bf2_vs_gather_transform_indexed,
+                       sizeof bf2_vs_gather_transform_indexed, NULL, &world.vsh_gather);
     if (!check_gpu(hr, "gather vertex shader"))
         return 0;
     {
@@ -655,30 +583,10 @@ static int ensure_hd_blit_helpers(void)
 {
     if (world.blit_vs && world.blit_ps)
         return 1;
-    static const char hlsl[] =
-        "Texture2D t_col : register(t0);\n"
-        "SamplerState s0 : register(s0);\n"
-        "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
-        "V blit_vs(uint i : SV_VertexID) {\n"
-        "    V o; float2 q = float2((i << 1) & 2, i & 2);\n"
-        "    o.uv = q; o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1);\n"
-        "    return o;\n"
-        "}\n"
-        "float4 blit_ps(V i) : SV_Target { return t_col.Sample(s0, i.uv); }\n";
-    ID3DBlob *vsb = compile_source(hlsl, sizeof(hlsl) - 1, "blit_vs", "vs_5_0");
-    ID3DBlob *psb = compile_source(hlsl, sizeof(hlsl) - 1, "blit_ps", "ps_5_0");
-    if (!vsb || !psb) {
-        if (vsb) ID3D10Blob_Release(vsb);
-        if (psb) ID3D10Blob_Release(psb);
-        return 0;
-    }
-    int ok = check_gpu(ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(vsb),
-                                                       ID3D10Blob_GetBufferSize(vsb), NULL, &world.blit_vs), "hd blit vs") &&
-             check_gpu(ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(psb),
-                                                      ID3D10Blob_GetBufferSize(psb), NULL, &world.blit_ps), "hd blit ps");
-    ID3D10Blob_Release(vsb);
-    ID3D10Blob_Release(psb);
-    if (!ok)
+    if (!check_gpu(ID3D11Device_CreateVertexShader(world.device, bf2_fullscreen_vs,
+                                                   sizeof bf2_fullscreen_vs, NULL, &world.blit_vs), "hd blit vs") ||
+        !check_gpu(ID3D11Device_CreatePixelShader(world.device, bf2_blit_ps,
+                                                  sizeof bf2_blit_ps, NULL, &world.blit_ps), "hd blit ps"))
         return 0;
 
     D3D11_SAMPLER_DESC smp = {0};
@@ -3490,60 +3398,12 @@ static int init_swapchain(HWND hwnd)
     if (!world.present_vs) {
         const char *cas_env = getenv("RECOMP_CAS");
         int use_cas = (cas_env && *cas_env) ? (cas_env[0] != '0') : 1;
-        static const char hlsl_linear[] =
-            "Texture2D t : register(t0); SamplerState s : register(s0);\n"
-            "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
-            "V vs(uint i : SV_VertexID) {\n"
-            "    V o;\n"
-            "    float2 q = float2((i << 1) & 2, i & 2);\n"
-            "    o.uv = q;\n"
-            "    o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1);\n"
-            "    return o;\n"
-            "}\n"
-            "float4 ps(V i) : SV_Target {\n"
-            "    return float4(t.Sample(s, i.uv).rgb, 1);\n"
-            "}\n";
-        static const char hlsl_cas[] =
-            "Texture2D t : register(t0); SamplerState s : register(s0);\n"
-            "struct V { float4 p : SV_Position; float2 uv : TEXCOORD0; };\n"
-            "V vs(uint i : SV_VertexID) {\n"
-            "    V o;\n"
-            "    float2 q = float2((i << 1) & 2, i & 2);\n"
-            "    o.uv = q;\n"
-            "    o.p = float4(q * float2(2, -2) + float2(-1, 1), 0, 1);\n"
-            "    return o;\n"
-            "}\n"
-            "float4 ps(V i) : SV_Target {\n"
-            "    float w, h;\n"
-            "    t.GetDimensions(w, h);\n"
-            "    float2 step = 1.0 / float2(w, h);\n"
-            "    float2 dx = float2(step.x, 0.0);\n"
-            "    float2 dy = float2(0.0, step.y);\n"
-            "    float3 a = t.Sample(s, i.uv - dy).rgb;\n"
-            "    float3 b = t.Sample(s, i.uv - dx).rgb;\n"
-            "    float3 e = t.Sample(s, i.uv).rgb;\n"
-            "    float3 d = t.Sample(s, i.uv + dx).rgb;\n"
-            "    float3 c = t.Sample(s, i.uv + dy).rgb;\n"
-            "    float3 mn = min(min(min(a, b), min(c, d)), e);\n"
-            "    float3 mx = max(max(max(a, b), max(c, d)), e);\n"
-            "    float3 amp = saturate(min(mn, 2.0 - mx) / max(mx, 0.001));\n"
-            "    float3 wgt = amp * -0.125;\n"
-            "    float3 col = (e + (a + b + c + d) * wgt) / (1.0 + 4.0 * wgt);\n"
-            "    return float4(saturate(col), 1.0);\n"
-            "}\n";
-        const char *hlsl = use_cas ? hlsl_cas : hlsl_linear;
-        size_t hlsl_len = use_cas ? sizeof(hlsl_cas) - 1 : sizeof(hlsl_linear) - 1;
-        ID3DBlob *vsb = NULL, *psb = NULL;
-        D3DCompile(hlsl, hlsl_len, "present_vs", NULL, NULL, "vs", "vs_5_0", 0, 0, &vsb, NULL);
-        D3DCompile(hlsl, hlsl_len, "present_ps", NULL, NULL, "ps", "ps_5_0", 0, 0, &psb, NULL);
-        if (vsb && psb) {
-            ID3D11Device_CreateVertexShader(world.device, ID3D10Blob_GetBufferPointer(vsb),
-                                            ID3D10Blob_GetBufferSize(vsb), NULL, &world.present_vs);
-            ID3D11Device_CreatePixelShader(world.device, ID3D10Blob_GetBufferPointer(psb),
-                                           ID3D10Blob_GetBufferSize(psb), NULL, &world.present_ps);
-        }
-        if (vsb) ID3D10Blob_Release(vsb);
-        if (psb) ID3D10Blob_Release(psb);
+        const BYTE *pixel_code = use_cas ? bf2_cas_ps : bf2_present_ps;
+        size_t pixel_size = use_cas ? sizeof bf2_cas_ps : sizeof bf2_present_ps;
+        ID3D11Device_CreateVertexShader(world.device, bf2_fullscreen_vs,
+                                        sizeof bf2_fullscreen_vs, NULL, &world.present_vs);
+        ID3D11Device_CreatePixelShader(world.device, pixel_code, pixel_size,
+                                       NULL, &world.present_ps);
 
         D3D11_SAMPLER_DESC smp = {0};
         const char *f = getenv("RECOMP_PRESENT_FILTER");
