@@ -1,6 +1,6 @@
 # Star Wars: Battlefront II — Native PC Recompilation
 
-A native 64-bit Windows port in development for **Star Wars: Battlefront II (2005)**. It uses ahead-of-time (AOT) static recompilation of the original Xbox executable and loads the extracted assets from your copy of the disc.
+A native 64-bit port in development for **Star Wars: Battlefront II (2005)**, with a Windows build and a Linux preview. It uses ahead-of-time (AOT) static recompilation of the original Xbox executable and loads the extracted assets from your copy of the disc.
 
 ## Quick Start
 
@@ -19,7 +19,33 @@ Windows benchmarks recorded a 64.5 FPS weighted average over 12 combat windows
 at 2× internal resolution, with the heaviest firefights dipping into the
 50–60 FPS range. See `HANDOFF.md` for the tested builds and settings.
 
-### Linux and Bazzite
+### Native Linux preview
+
+Build on x86-64 Linux with a C compiler, CMake, SDL2 development files, and
+OpenSSL development files.
+
+```sh
+cmake -S bf2_recomp -B build-linux -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux --parallel 4
+ctest --test-dir build-linux --output-on-failure
+cmake --install build-linux --prefix "$PWD/out/swbf2-linux"
+```
+
+Put `default.xbe`, `Data`, and `media` from your extracted Xbox disc in the
+staging directory beside `swbf2_recomp`. Launch from that directory with
+`./swbf2_recomp -windowed`. The prebuilt preview requires SDL2 and glibc 2.38
+or newer. For a Steam shortcut, use this Linux executable and its directory
+as **Start In**, with the Steam Play compatibility override turned off.
+
+The preview uses the software NV2A renderer at 640×480. SDL2 presents the
+framebuffer and handles audio and controller or keyboard input. The native
+preview has no Vulkan requirement. The Windows D3D11 accelerator, settings
+overlay, and raw mouse controls are not available in this build. Performance
+and playback on Bazzite with a GeForce 940M are still to be measured.
+With the default keyboard bindings, use Enter for Start, Z to select, X to
+go back, WASD to move, IJKL to aim, and 3 to fire.
+
+### Windows build through Proton or Wine
 
 The Linux launch path uses the x64 Windows build through Proton or Wine. It
 requires the extracted files from your own Xbox copy and a writable game
@@ -35,8 +61,11 @@ directory for settings and saves.
 2. Copy the staged directory to the Linux machine. Put the extracted disc files
    in it so that `default.xbe`, the `Data` and `media` directories, and
    `swbf2_recomp.exe` are siblings.
-3. On Bazzite, add `swbf2_recomp.exe` as a non-Steam game in Desktop Mode. In the
-   shortcut properties, set **Start In** to the game directory and enable
+3. On Bazzite, add **`swbf2_recomp.exe`** as a non-Steam game in Desktop Mode.
+   The separate `swbf2_launcher.exe` is the Windows settings hub and uses
+   WebView2. The game executable and its F1/Home settings overlay have no
+   WebView2 dependency. In the shortcut properties, set **Start In** to the
+   directory containing `default.xbe` and enable
    **Force the use of a specific Steam Play compatibility tool** under
    **Compatibility**. Choose an installed Proton version. The shortcut can also
    be launched from Gaming Mode. [Bazzite game launcher documentation](https://docs.bazzite.gg/Gaming/Game_Launchers/)
@@ -58,6 +87,28 @@ Linux testing under Wine and DXVK covers startup, profile saving and reopening,
 and spawning, movement, and firing in Coruscant Conquest. The combat smoke test
 used a virtual display and software Vulkan at 1× internal resolution. Full
 matches and performance on Bazzite hardware are still pending.
+
+#### Diagnosing a Proton startup crash or freeze
+
+In **Properties → Launch Options**, run the same Proton version for each test.
+Start with `PROTON_LOG=1 %command%` to capture a baseline. Proton writes
+`steam-<AppID>.log` in your home directory. Save a copy after each run so the
+next test cannot overwrite it. [Valve Proton runtime options](https://github.com/ValveSoftware/Proton#runtime-config-options)
+
+- If the game crashes as sound starts, try
+  `PROTON_LOG=1 RECOMP_AUDIO_NO_OUTPUT=1 %command%` with a build that includes
+  the audio diagnostic. This bypasses host audio playback while the emulated
+  Xbox audio hardware, mixing, and interrupts continue. Expect silence.
+- If the first loading screen stalls, try
+  `PROTON_LOG=1 RECOMP_DIRECT_PRESENT=0 RECOMP_D3D_PRESENT=0 RECOMP_VSH_JIT=0 RECOMP_PS_JIT=0 %command% -windowed -res 1`.
+  This is the graphics configuration used in the Wine/DXVK combat smoke test.
+  It uses the framebuffer window, where the settings overlay is unavailable.
+
+For a hang that leaves the process running, add `RECOMP_WATCHDOG_SECS=120`
+before `%command%` in that run. This dumps guest state to the log and exits at
+the time limit even if loading succeeds. Remove it for normal play. When
+reporting the result, include the log, Proton version, GPU, and whether you
+used Desktop Mode or Gaming Mode.
 
 ### Controls
 

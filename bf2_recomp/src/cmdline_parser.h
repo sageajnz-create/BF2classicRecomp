@@ -12,6 +12,7 @@ extern "C" {
  * Parameters passed via CLI override any existing values in bf2_recomp.ini.
  */
 void parse_recomp_cmdline(const char *cmdline);
+void parse_recomp_args(int argc, char **argv);
 
 #ifdef __cplusplus
 }

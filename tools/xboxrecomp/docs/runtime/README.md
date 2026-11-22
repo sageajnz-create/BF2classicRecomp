@@ -97,5 +97,5 @@ int main(void)
 }
 ```
 
-`xbox_PosixMmioFault` decodes the faulting instruction on arm64 hosts only;
-on x86-64 POSIX it always returns 0, and the traps are not armed there.
+`xbox_PosixMmioFault` decodes the faulting instruction on arm64 hosts and on
+x86-64 Linux. On other POSIX hosts it returns 0 and the traps are not armed.

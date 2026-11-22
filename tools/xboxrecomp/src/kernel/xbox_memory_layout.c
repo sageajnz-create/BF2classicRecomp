@@ -84,9 +84,8 @@ static void *g_mirror_views[XBOX_NUM_MIRRORS] = {0};
  * question. */
 static void *g_span_base = NULL;
 static size_t g_span_size = 0;
-/* POSIX, RECOMP_EXT_VMA only: the span holds the whole 4 GB guest window, and
- * every fixed-address window is carved out of it (layout_map_view,
- * layout_commit_at). See the span reservation in xbox_MemoryLayoutInit. */
+/* POSIX: with a full guest reservation, the fixed-address mappings are
+ * carved out of the 4 GB span by layout_map_view and layout_commit_at. */
 static int g_span_whole_window = 0;
 
 /* POSIX: hand back the part of our span reservation a fixed-address window is
@@ -679,7 +678,7 @@ static void ac97_posix_wr(void *dev, uint32_t off, uint64_t v, int size)
     memcpy((char *)dev + off, &v, size > 8 ? 8 : size);
 }
 
-/* POSIX arm64 half of the AC'97 write trap: the page is PROT_READ, so a
+/* POSIX side of the AC'97 write trap: the page is PROT_READ, so a
  * write arrives as SIGBUS/SIGSEGV; the title's fault handler reaches this
  * through xbox_PosixMmioFault before reporting. The store is emulated onto
  * the page (open for the moment), the controller's reaction applied, and the
@@ -747,7 +746,8 @@ static void ac97_arm_write_trap(void)
     return;
 #endif
     g_ac97_page = (char *)g_mcpx_memory + AC97_NABM_OFFSET;
-#if !defined(_WIN32) && defined(__aarch64__)
+#if !defined(_WIN32) && (defined(__aarch64__) \
+        || (defined(__x86_64__) && defined(__linux__)))
     (void)old;
     g_ac97_hsize = (size_t)sysconf(_SC_PAGESIZE);
     if (g_ac97_hsize < AC97_TRAP_BYTES)
@@ -2615,6 +2615,9 @@ static void xbox_heap_reset_base(void);
 
 BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
 {
+#if !defined(_WIN32)
+    const int require_guest_window = getenv("RECOMP_POSIX_GUEST_WINDOW") != NULL;
+#endif
     g_force_return = getenv("RECOMP_FORCE_RETURN") != NULL;
     DWORD old_protect;
     const uint8_t *xbe = (const uint8_t *)xbe_data;
@@ -2716,15 +2719,10 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
          * otherwise run to 0xE8000000 and hold 0x80000000 against it. */
         if (g_span_size > XBOX_CONTIG_BASE)
             g_span_size = XBOX_CONTIG_BASE;
-        /* RECOMP_EXT_VMA: hold the whole 4 GB guest window, as Windows does
-         * with its placeholder. Linux places mappings top-down, so the host
-         * range just above a fresh span is usually already taken: guest_vmem's
-         * fixed reservation there failed (ENOMEM), and a span grown only to
-         * GUEST_VMEM_TOP pushed the contiguous window onto the neighbour
-         * instead. Each fixed window is carved out of the span as it is
-         * mapped, and guest_vmem's range is handed over just before
-         * guest_vmem_init. Off by default; the stock span is unchanged. */
-        if (ext_vma_span(g_span_size)) {
+        /* Reserve room for the hardware apertures as well as the mirrors,
+         * even when the extended guest allocator is disabled. The contiguous
+         * window must never land on a host heap or thread stack. */
+        if (require_guest_window || ext_vma_span(g_span_size)) {
             g_span_size = (size_t)1 << 32;
             g_span_whole_window = 1;
         }
@@ -2742,6 +2740,12 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             }
         } else {
             g_span_whole_window = 0;
+        }
+        if (require_guest_window && !g_span_whole_window) {
+            fprintf(stderr, "xbox_MemoryLayoutInit: failed to reserve the full guest window\n");
+            CloseHandle(g_mapping_handle);
+            g_mapping_handle = NULL;
+            return FALSE;
         }
 #endif
 
@@ -2783,6 +2787,10 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
         fprintf(stderr, ", %zu MB held\n", g_win_window_size >> 20);
     else
         fprintf(stderr, "\n");
+#else
+    if (g_span_whole_window)
+        fprintf(stderr, "xbox_MemoryLayoutInit: reserved %zu MB for the guest window at %p\n",
+                g_span_size >> 20, g_memory_base);
 #endif
 
     /* Guest page zero: no access.
@@ -3270,6 +3278,12 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
             ? layout_map_view(g_contig_mapping, XBOX_CONTIG_SIZE,
                               (LPVOID)contig_native)
             : NULL;
+#if !defined(_WIN32)
+        if (require_guest_window && !g_contig_memory) {
+            fprintf(stderr, "xbox_MemoryLayoutInit: could not map the contiguous guest window\n");
+            return FALSE;
+        }
+#endif
         if (!g_contig_memory)
             g_contig_memory = layout_commit_at((LPVOID)contig_native,
                                                XBOX_CONTIG_SIZE);
@@ -3704,6 +3718,13 @@ BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
 #if defined(_WIN32)
     if (g_win_window_size)
         win_settle_placeholders();
+#else
+    if (require_guest_window &&
+        (!g_tiled_view || !g_nv2a_memory || !g_mcpx_memory ||
+         !g_flash_memory || !g_kernel_memory)) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: a required guest aperture could not be mapped\n");
+        return FALSE;
+    }
 #endif
     xbox_WatchInit();
     fprintf(stderr, "xbox_MemoryLayoutInit: complete\n");

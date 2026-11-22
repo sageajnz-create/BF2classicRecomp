@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,13 @@ int main(void)
     assert(strcmp(get_env_safe("RECOMP_ACTIVE_MOD"), "KOTOR") == 0);
     assert(strcmp(get_env_safe("RECOMP_FULLSCREEN"), "1") == 0);
     printf("  [PASS] compound command line\n");
+
+    /* Native argv already preserves quoting and token boundaries. */
+    char *argv[] = {"./swbf2_recomp", "-windowed", "-mod", "Example Pack", NULL};
+    parse_recomp_args(4, argv);
+    assert(strcmp(get_env_safe("RECOMP_FULLSCREEN"), "0") == 0);
+    assert(strcmp(get_env_safe("RECOMP_ACTIVE_MOD"), "Example Pack") == 0);
+    printf("  [PASS] native argv with spaces\n");
 
     printf("All CLI Argument Parser tests passed successfully!\n");
     return 0;

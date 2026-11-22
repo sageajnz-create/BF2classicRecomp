@@ -520,6 +520,13 @@ void mcpx_apu_monitor_init(MCPXAPUState *d, Error **errp)
             apu_wav_open(wav, secs ? atof(secs) : 0.0);
     }
 
+    /* Keep voice processing and guest interrupts running on the host clock
+     * while isolating the host playback backend. */
+    if (apu_env_on("RECOMP_AUDIO_NO_OUTPUT")) {
+        fprintf(stderr, "[APU] Host audio output disabled; using host clock\n");
+        return;
+    }
+
     /* Try XAudio2 first (lower latency) */
     if (xa2_init()) {
         /* Pacing marks in samples (xa2_pacing_marks): high is all the

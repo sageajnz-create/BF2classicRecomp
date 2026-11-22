@@ -455,21 +455,15 @@ int xbox_HostWindowMain(int (*guest_main)(void))
     fflush(stdout);
     fflush(stderr);
 
-    /* Window and renderer go first, on this thread as AppKit wants. SDL_Quit
-     * is only safe once nothing else uses SDL: the USB and guest threads read
-     * the game controllers, so with one open SDL stays up and exit()
-     * reclaims it. The main-pump flag stays set, so those threads do not
-     * start calling SDL_GameControllerUpdate while SDL goes down. */
+    /* Destroy the window on its owning thread. On window close the guest
+     * threads can still use SDL audio and controllers until the process exits. */
     if (tex)
         SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
-    if (!xbox_InputAnyOpen())
-        SDL_Quit();
-    else
-        SDL_QuitSubSystem(FBWIN_SDL_SUBSYSTEMS);
     if (quit)
         exit(0);
+    SDL_QuitSubSystem(FBWIN_SDL_SUBSYSTEMS);
     return s_guest_rc;
 }
 

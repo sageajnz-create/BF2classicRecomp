@@ -18,6 +18,9 @@ add_compile_definitions(
 set(XBOXRECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../tools/xboxrecomp" CACHE PATH
     "Path to the xboxrecomp toolkit root directory")
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(XBOXRECOMP_BUILD_D3D8 OFF)
+endif()
 add_subdirectory(${XBOXRECOMP_DIR} ${CMAKE_BINARY_DIR}/xboxrecomp)
 
 # Recompiled generated C sources
@@ -27,23 +30,23 @@ set(GAME_SOURCES
     src/main.c
     src/cmdline_parser.c
     src/recomp_manual.c
-    src/gpu_resolve.c
-    src/gpu_shader_jit.c
-    src/gpu_world.c
-    src/host_profile.c
-    src/overlay_config.c
-    src/overlay_draw.c
-    src/overlay_menu.c
 )
+if(WIN32)
+    list(APPEND GAME_SOURCES
+        src/gpu_resolve.c
+        src/gpu_shader_jit.c
+        src/gpu_world.c
+        src/host_profile.c
+        src/overlay_config.c
+        src/overlay_draw.c
+        src/overlay_menu.c
+    )
+endif()
 
 add_executable(${PROJECT_NAME}
     ${GAME_SOURCES}
     ${RECOMP_GEN_SOURCES}
 )
-include(cmake/RendererShaders.cmake)
-bf2_world_shaders(${PROJECT_NAME})
-bf2_resolve_shader(${PROJECT_NAME})
-
 target_link_libraries(${PROJECT_NAME} PRIVATE xboxrecomp)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -54,15 +57,14 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${XBOXRECOMP_DIR}/include
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    d3d11
-    d3dcompiler
-    dxgi
-    dxguid
-    xinput
-    winmm
-    dbghelp
-)
+if(WIN32)
+    include(cmake/RendererShaders.cmake)
+    bf2_world_shaders(${PROJECT_NAME})
+    bf2_resolve_shader(${PROJECT_NAME})
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        d3d11 d3dcompiler dxgi dxguid xinput winmm dbghelp
+    )
+endif()
 
 if(MSVC)
     # MSVC's optimizer can spend many minutes on this generated unit alone.
@@ -80,48 +82,57 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /bigobj /MP)
 endif()
 
-# Automatically deploy latest executable and config to game_files
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "$<TARGET_FILE:${PROJECT_NAME}>"
-        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini"
-        "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
-    COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
-)
+# Automatically deploy the Windows build to the development game directory.
+if(WIN32)
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${PROJECT_NAME}>"
+            "${CMAKE_CURRENT_SOURCE_DIR}/game_files/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini"
+            "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
+        COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
+    )
+endif()
 
-# Stage a portable runtime for Steam/Proton or the Linux launcher. The user
+# Stage the host's runtime. The Windows package also includes the Wine helper. The user
 # supplies the disc files separately in this same directory.
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION .)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini" DESTINATION .)
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../run_swbf2_linux.sh" DESTINATION .)
+if(WIN32)
+    install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../run_swbf2_linux.sh" DESTINATION .)
+endif()
 
 # ============================================================================
 # Overlay Menu Unit Tests
 # ============================================================================
 enable_testing()
 
-add_executable(check_overlay_config
-    tests/check_overlay_config.c
-    src/overlay_config.c
-)
-target_include_directories(check_overlay_config PRIVATE src)
-add_test(NAME check_overlay_config COMMAND check_overlay_config)
+add_executable(check_cli_args tests/check_cli_args.c src/cmdline_parser.c)
+add_test(NAME check_cli_args COMMAND check_cli_args)
 
-add_executable(check_overlay_draw
-    tests/check_overlay_draw.c
-    src/overlay_draw.c
-)
-target_include_directories(check_overlay_draw PRIVATE src)
-add_test(NAME check_overlay_draw COMMAND check_overlay_draw)
+if(WIN32)
+    add_executable(check_overlay_config
+        tests/check_overlay_config.c
+        src/overlay_config.c
+    )
+    target_include_directories(check_overlay_config PRIVATE src)
+    add_test(NAME check_overlay_config COMMAND check_overlay_config)
 
-add_executable(check_overlay_widgets
-    tests/check_overlay_widgets.c
-    src/overlay_menu.c
-    src/overlay_draw.c
-    src/overlay_config.c
-)
-target_include_directories(check_overlay_widgets PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(check_overlay_widgets PRIVATE d3d11 d3dcompiler dxgi)
-add_test(NAME check_overlay_widgets COMMAND check_overlay_widgets)
+    add_executable(check_overlay_draw
+        tests/check_overlay_draw.c
+        src/overlay_draw.c
+    )
+    target_include_directories(check_overlay_draw PRIVATE src)
+    add_test(NAME check_overlay_draw COMMAND check_overlay_draw)
+
+    add_executable(check_overlay_widgets
+        tests/check_overlay_widgets.c
+        src/overlay_menu.c
+        src/overlay_draw.c
+        src/overlay_config.c
+    )
+    target_include_directories(check_overlay_widgets PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(check_overlay_widgets PRIVATE d3d11 d3dcompiler dxgi)
+    add_test(NAME check_overlay_widgets COMMAND check_overlay_widgets)
+endif()

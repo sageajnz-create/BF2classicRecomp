@@ -4,6 +4,58 @@ Checkpoint from 19 November 2026 NZDT. The goal is a fully playable and modern n
 
 > **HOST RULE (CRITICAL):** Never touch, modify, or query Windows host audio settings or audio devices under any circumstances. Keep copyrighted game assets (`*.iso`, `*.xbe`, `game_files/`, `logs/`, `.obj`) out of Git at all times.
 
+## 23 November 2026 NZDT — Native Linux preview
+
+- The Bazzite test laptop has a GeForce 940M and was unavailable for this
+  session. The x86-64 Linux target reuses the software NV2A renderer and the
+  toolkit's SDL2 video, audio, and input backends. The staged ELF requires
+  glibc 2.38 and SDL2. The files in `out/swbf2-linux-x86_64-preview.tar.gz`
+  are the executable and configuration. The Linux build does not require
+  Steam, Wine, D3D11, or Vulkan.
+- The first WSL2 run stalled before voice processing. The x86-64 Linux
+  AC'97 decoder was present, but trap setup fell through to the Windows VEH
+  shim. Arming the POSIX trap let the title finish the channel reset and enter
+  the shell. SDL's virtual test sink received 45 seconds of PCM, including
+  nonzero samples. See `logs/linux-compat/native-game-smoke-ac97.log`.
+- The unpacked archive booted to the title, created Player 1, and wrote
+  a 1,380-byte profile. It loaded Coruscant Conquest and spawned a CIS unit.
+  Keyboard movement changed the view, and firing reduced ammo from 250 to 247.
+  Samples in combat were about 3–4 FPS. CPU rasterization took roughly
+  3.5–3.7 seconds per five-second sample, while framebuffer presentation took
+  under 4 ms. Some menu elements rendered incorrectly and the team picker
+  showed `[NULL]` labels. See `logs/linux-compat/native-game-smoke-archive.log`
+  and the `native-game-combat-*.bmp` captures. Full match completion, real
+  audio output, and 940M performance are still open.
+- One relaunch collided with the host allocator at guest VA `0x80000000`.
+  The Linux executable now requests the full 4 GiB guest reservation before
+  mapping hardware apertures, and startup fails if a required mapping cannot
+  be made. Six subsequent boots passed the address map and APU checks.
+  The final archive reopened the profile picker with the saved entry and
+  closed the SDL window with exit code 0. See `native-game-smoke-final.log`
+  and `native-game-repeat-*.log` under `logs/linux-compat/`. The Linux CLI
+  fixture and all four Windows CTest fixtures passed.
+
+## 23 November 2026 NZDT — Bazzite startup report
+
+- The user reported that Proton Hotfix reached the title and crashed as audio
+  started. Proton 11.0.2 and Experimental showed 0 FPS at the end of the first
+  loading screen. The attached WebView2 dialog belongs to the optional Tauri
+  hub. Use the standalone `swbf2_recomp.exe` for the Steam shortcut.
+- The staged build in `out/swbf2-bazzite-test/` adds
+  `RECOMP_AUDIO_NO_OUTPUT=1` to bypass host playback while the guest APU
+  continues on the host clock. The Wine 9/DXVK 2.7.1 comparison used llvmpipe
+  and a virtual display. The 2× direct-present runs continued producing frames
+  with playback enabled and bypassed until their 100-second diagnostic
+  deadline. Both spent most measured frame time in the DXGI present call.
+- The 1× framebuffer fallback with shader JITs off initialized XAudio2 against
+  the test sink, reached **Press START**, and accepted keyboard input through
+  to profile selection after a save-space prompt. See
+  `logs/linux-compat/bazzite-low-overhead-title.bmp` and
+  `bazzite-low-overhead-continue.bmp` in the same directory. The three run logs
+  use the `bazzite-*-local.log` naming pattern. Bazzite playback and the
+  reported zero-FPS stall remain unverified. The README has the Steam launch
+  options for collecting a baseline and testing each workaround.
+
 ## 22 November 2026 NZDT — Linux compatibility
 
 - The Windows Release build now embeds bytecode for the fixed D3D11 world,
