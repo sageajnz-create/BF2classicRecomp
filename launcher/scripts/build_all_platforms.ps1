@@ -17,10 +17,9 @@ Write-Host "Launcher Root: $LauncherDir"
 Write-Host "Project Root : $ProjectRoot"
 
 # Step 1: Build Frontend Assets
-Set-Location $LauncherDir
 if (-not $SkipFrontendBuild) {
     Write-Host "`n[1/3] Compiling TypeScript & Vite Production Bundle..." -ForegroundColor Yellow
-    npm run build
+    npm --prefix $LauncherDir run build
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Frontend compilation failed."
         exit $LASTEXITCODE
@@ -34,28 +33,26 @@ if ($Debug) {
     $BuildArgs = @("build", "--debug")
 }
 
-npx @tauri-apps/cli @BuildArgs
+npm --prefix $LauncherDir run tauri -- @BuildArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Tauri native build failed."
     exit $LASTEXITCODE
 }
 
-# Step 3: Deploy Executable to Game Directories
+# Step 3: Stage the Windows hub executable
 Write-Host "`n[3/3] Deploying Launcher Executable..." -ForegroundColor Yellow
 $TargetExe = "$LauncherDir\src-tauri\target\release\swbf2_launcher.exe"
 if ($Debug) {
     $TargetExe = "$LauncherDir\src-tauri\target\debug\swbf2_launcher.exe"
 }
 
-if (Test-Path $TargetExe) {
-    Copy-Item -Path $TargetExe -Destination "$ProjectRoot\swbf2_launcher.exe" -Force
-    Write-Host "  -> Deployed to: $ProjectRoot\swbf2_launcher.exe" -ForegroundColor Green
-
-    if (Test-Path "$ProjectRoot\game_files") {
-        Copy-Item -Path $TargetExe -Destination "$ProjectRoot\game_files\swbf2_launcher.exe" -Force
-        Write-Host "  -> Deployed to: $ProjectRoot\game_files\swbf2_launcher.exe" -ForegroundColor Green
-    }
+if (-not (Test-Path -LiteralPath $TargetExe -PathType Leaf)) {
+    throw "Could not find the Windows launcher build at $TargetExe"
 }
+$StageDir = Join-Path $ProjectRoot 'out/swbf2-hub'
+New-Item -ItemType Directory -Path $StageDir -Force | Out-Null
+Copy-Item -LiteralPath $TargetExe -Destination $StageDir -Force
+Write-Host "  -> Staged to: $StageDir"
 
 Write-Host "`n=== Build & Packaging Complete! ===" -ForegroundColor Green
-Write-Host "To launch the hub, run: .\swbf2_launcher.exe"
+Write-Host "From the project root, run: .\run_swbf2_hub.bat"

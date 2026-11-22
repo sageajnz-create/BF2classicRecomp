@@ -8,7 +8,7 @@
 
 **Tech Stack:** C11, Direct3D 11, Win32 API, CMake.
 
-**Spec:** [docs/superpowers/specs/2026-11-19-ingame-overlay-menu-design.md](file:///c:/Users/sagea/Projects/BF2classicRecomp/docs/superpowers/specs/2026-11-19-ingame-overlay-menu-design.md)
+**Spec:** [In-game overlay design](../specs/2026-11-19-ingame-overlay-menu-design.md)
 
 ---
 
@@ -300,7 +300,7 @@
   - Inspect `bf2_recomp.ini` to confirm atomic save of adjusted settings.
 
 - [ ] **Step 3: Update documentation and handoff**
-  - Update [README.md](file:///c:/Users/sagea/Projects/BF2classicRecomp/README.md) and [HANDOFF.md](file:///c:/Users/sagea/Projects/BF2classicRecomp/HANDOFF.md) detailing the in-game settings overlay controls (`F1` / `Home`) and features.
+  - Update [README.md](../../../README.md) and [HANDOFF.md](../../../HANDOFF.md) detailing the in-game settings overlay controls (`F1` / `Home`) and features.
 
 - [ ] **Step 4: Final commit**
   - Git commit: `feat(overlay): finalize in-game D3D11 settings overlay and update documentation`

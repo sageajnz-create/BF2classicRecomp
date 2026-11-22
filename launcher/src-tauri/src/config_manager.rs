@@ -235,12 +235,13 @@ impl RecompConfig {
 
 pub fn locate_ini_path() -> PathBuf {
     let candidates = [
+        PathBuf::from("bf2_recomp/game_files/bf2_recomp.ini"),
+        PathBuf::from("../bf2_recomp/game_files/bf2_recomp.ini"),
         PathBuf::from("bf2_recomp.ini"),
         PathBuf::from("../bf2_recomp.ini"),
         PathBuf::from("../../bf2_recomp.ini"),
         PathBuf::from("game_files/bf2_recomp.ini"),
         PathBuf::from("../game_files/bf2_recomp.ini"),
-        PathBuf::from("bf2_recomp/game_files/bf2_recomp.ini"),
     ];
 
     for candidate in &candidates {

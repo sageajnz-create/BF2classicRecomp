@@ -85,13 +85,17 @@ endif()
 # Automatically deploy the Windows build to the development game directory.
 if(WIN32)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/game_files"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:${PROJECT_NAME}>"
             "${CMAKE_CURRENT_SOURCE_DIR}/game_files/$<TARGET_FILE_NAME:${PROJECT_NAME}>"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini"
-            "${CMAKE_CURRENT_SOURCE_DIR}/game_files/bf2_recomp.ini"
-        COMMENT "Deploying latest swbf2_recomp.exe and config to game_files"
+        COMMAND ${CMAKE_COMMAND}
+            "-DDEFAULT_INI=${CMAKE_CURRENT_SOURCE_DIR}/../bf2_recomp.ini"
+            "-DGAME_DIR=${CMAKE_CURRENT_SOURCE_DIR}/game_files"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/SeedGameConfig.cmake"
+        COMMENT "Deploying swbf2_recomp.exe to game_files"
+        VERBATIM
     )
 endif()
 

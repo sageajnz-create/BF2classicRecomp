@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = 3000;
-const HOST = "0.0.0.0";
+const HOST = "127.0.0.1";
 
 export interface RecompConfig {
   aspect: string;
@@ -128,11 +128,11 @@ function sanitizeConfig(cfg: RecompConfig): RecompConfig {
 
 function locateIniPath(): string {
   const candidates = [
+    path.resolve(__dirname, "../bf2_recomp/game_files/bf2_recomp.ini"),
     path.resolve(__dirname, "bf2_recomp.ini"),
     path.resolve(__dirname, "../bf2_recomp.ini"),
     path.resolve(__dirname, "../../bf2_recomp.ini"),
     path.resolve(__dirname, "game_files/bf2_recomp.ini"),
-    path.resolve(__dirname, "../bf2_recomp/game_files/bf2_recomp.ini"),
   ];
   for (const p of candidates) {
     if (fs.existsSync(p)) return p;
@@ -929,7 +929,7 @@ async function startServer() {
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.argv.includes("--production")) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       root: __dirname,
@@ -940,12 +940,13 @@ async function startServer() {
   } else {
     const distDir = path.resolve(__dirname, "dist");
     app.use(express.static(distDir));
-    app.get("*", (_req, res) => {
+    app.get("/{*page}", (_req, res) => {
       res.sendFile(path.join(distDir, "index.html"));
     });
   }
 
-  app.listen(PORT, HOST, () => {
+  app.listen(PORT, HOST, (error) => {
+    if (error) throw error;
     console.log(`SWBF2 Recomp Hub running at http://${HOST}:${PORT}`);
   });
 }

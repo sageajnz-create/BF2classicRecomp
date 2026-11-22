@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust 2021, Tauri 2.0, Tokio (async UDP & filesystem), TypeScript, Vite, Tailwind CSS, C11 (`bf2_recomp`).
 
-**Spec:** [docs/superpowers/specs/2026-11-18-desktop-hub-launcher-design.md](file:///c:/Users/sagea/Projects/BF2classicRecomp/docs/superpowers/specs/2026-11-18-desktop-hub-launcher-design.md)
+**Spec:** [Desktop hub design](../specs/2026-11-18-desktop-hub-launcher-design.md)
 
 ---
 

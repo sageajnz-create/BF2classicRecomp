@@ -2,19 +2,10 @@
   "name": "bf2-classic-recomp",
   "private": true,
   "version": "1.0.0",
-  "type": "module",
-  "workspaces": [
-    "launcher"
-  ],
   "scripts": {
-    "dev": "npm run dev --workspace=swbf2-recomp-hub",
-    "build": "npm run build --workspace=swbf2-recomp-hub",
-    "lint": "npm run lint --workspace=swbf2-recomp-hub",
-    "start": "npm run start --workspace=swbf2-recomp-hub"
-  },
-  "dependencies": {
-    "@types/express": "^5.0.6",
-    "express": "^5.3.0",
-    "tsx": "^4.23.15"
+    "dev": "npm --prefix launcher run dev",
+    "build": "npm --prefix launcher run build",
+    "lint": "npm --prefix launcher run lint",
+    "start": "npm --prefix launcher start"
   }
 }

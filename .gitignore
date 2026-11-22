@@ -8,9 +8,8 @@
 *.iso
 *.xiso
 *.xbe
-StarWarsBattlefrontII.iso
-default.xbe
-bf2_recomp/game_files/
+/local/
+/bf2_recomp/game_files/
 game/
 
 # -----------------------------------------------------------------------------
@@ -19,6 +18,7 @@ game/
 build/
 bin/
 out/
+build-*/
 Debug/
 Release/
 x64/
@@ -49,6 +49,9 @@ Makefile
 # Large Benchmark Logs & Telemetry Captures
 # -----------------------------------------------------------------------------
 logs/
+saves/
+screenshots/
+xbox_kernel.log
 *.bmp
 ring2-last.png
 uavprobe.obj
