@@ -1,0 +1,8 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "start": {
+    "program": ["swbf2_recomp.exe"]
+  },
+  "saves": ["{install}/saves"]
+}

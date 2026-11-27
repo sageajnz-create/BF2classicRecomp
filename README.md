@@ -39,3 +39,4 @@ in the game directory. Build output and staging stay under `bf2_recomp/build/`
 or `out/`. Test captures stay under `logs/`. These directories are Git-ignored.
 
 See the [development guide](docs/DEVELOPMENT.md) for build checks and profiling.
+See [release readiness](docs/RELEASE.md) for RecompLauncher integration and package verification.

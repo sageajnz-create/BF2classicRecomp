@@ -13,9 +13,31 @@ const tabs: Record<string, () => Promise<{ default: TabController }>> = {
 };
 
 let currentTabController: TabController | null = null;
+let tabRequest = 0;
 
 async function switchTab(tabKey: string) {
-  if (!tabs[tabKey]) return;
+  if (!Object.prototype.hasOwnProperty.call(tabs, tabKey)) return;
+
+  const main = document.getElementById("tab-content");
+  if (!main) return;
+
+  const request = ++tabRequest;
+  let controller: TabController;
+  try {
+    controller = (await tabs[tabKey]()).default;
+  } catch (error) {
+    if (request === tabRequest) {
+      console.error(`Could not load the ${tabKey} tab`, error);
+      const notice = document.createElement("p");
+      notice.setAttribute("role", "alert");
+      notice.textContent = "Could not open this tab. Select it again to retry.";
+      main.querySelector("[data-tab-load-error]")?.remove();
+      notice.setAttribute("data-tab-load-error", "");
+      main.prepend(notice);
+    }
+    return;
+  }
+  if (request !== tabRequest) return;
 
   // Update nav buttons
   document.querySelectorAll(".nav-btn").forEach((btn) => {
@@ -27,17 +49,10 @@ async function switchTab(tabKey: string) {
     }
   });
 
-  const main = document.getElementById("tab-content");
-  if (!main) return;
-
-  if (currentTabController?.unmount) {
-    currentTabController.unmount();
-  }
-
+  currentTabController?.unmount?.();
   main.innerHTML = "";
-  const mod = await tabs[tabKey]();
-  currentTabController = mod.default;
-  currentTabController.mount(main);
+  currentTabController = controller;
+  controller.mount(main);
 }
 
 window.addEventListener("DOMContentLoaded", () => {
